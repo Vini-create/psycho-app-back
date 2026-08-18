@@ -9,7 +9,7 @@ import (
 func TestHealth(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	recorder := httptest.NewRecorder()
-	router := NewRouter()
+	router := newMux()
 
 	router.ServeHTTP(recorder, request)
 

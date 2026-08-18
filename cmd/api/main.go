@@ -9,9 +9,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"github.com/Vini-create/psycho-app-back/internal/auth"
+	"github.com/Vini-create/psycho-app-back/internal/care"
+	"github.com/Vini-create/psycho-app-back/internal/chat"
+	"github.com/Vini-create/psycho-app-back/internal/companion"
+	"github.com/Vini-create/psycho-app-back/internal/config"
 	"github.com/Vini-create/psycho-app-back/internal/httpapi"
+	"github.com/Vini-create/psycho-app-back/internal/insight"
+	"github.com/Vini-create/psycho-app-back/internal/platform/postgres"
 )
 
 func main() {
@@ -22,6 +28,11 @@ func main() {
 }
 
 func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+
 	signalCtx, stopSignals := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -29,12 +40,142 @@ func run() error {
 	)
 	defer stopSignals()
 
-	router := httpapi.NewRouter()
+	databaseCtx, cancelDatabase := context.WithTimeout(
+		signalCtx,
+		cfg.Database.ConnectTimeout,
+	)
+
+	databasePool, err := postgres.Open(
+		databaseCtx,
+		cfg.Database.URL,
+	)
+
+	cancelDatabase()
+
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+
+	defer databasePool.Close()
+
+	slog.Info("database connection established")
+
+	accessTokenManager, err := auth.NewAccessTokenManager(
+		cfg.Auth.Issuer,
+		cfg.Auth.JWTPrivateKey,
+		cfg.Auth.AccessTokenTTL,
+	)
+	if err != nil {
+		return fmt.Errorf("create access token manager: %w", err)
+	}
+
+	secretCipher, err := auth.NewSecretCipher(cfg.Auth.DataEncryptionKey)
+	if err != nil {
+		return fmt.Errorf("create auth secret cipher: %w", err)
+	}
+
+	authRepository := auth.NewRepository(databasePool)
+	passkeyManager, err := auth.NewPasskeyManager(
+		authRepository,
+		secretCipher,
+		auth.PasskeyConfig{
+			RPID:          cfg.Auth.WebAuthnRPID,
+			RPDisplayName: cfg.Auth.WebAuthnRPDisplayName,
+			RPOrigins:     cfg.Auth.WebAuthnOrigins,
+			CeremonyTTL:   cfg.Auth.WebAuthnCeremonyTTL,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create passkey manager: %w", err)
+	}
+
+	authService, err := auth.NewService(
+		authRepository,
+		accessTokenManager,
+		passkeyManager,
+		auth.ServiceConfig{
+			RefreshTokenTTL:           cfg.Auth.RefreshTokenTTL,
+			EmailVerificationTokenTTL: cfg.Auth.EmailVerificationTokenTTL,
+			PasswordResetTokenTTL:     cfg.Auth.PasswordResetTokenTTL,
+			ExposeDevelopmentTokens:   cfg.Auth.ExposeDevelopmentTokens,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create auth service: %w", err)
+	}
+
+	authHandler := httpapi.NewAuthHandler(
+		authService,
+		httpapi.AuthHandlerConfig{
+			CookieSecure:    cfg.Auth.CookieSecure,
+			RefreshTokenTTL: cfg.Auth.RefreshTokenTTL,
+			AllowedOrigins:  cfg.Auth.AllowedOrigins,
+		},
+	)
+
+	var companionClient companion.Client = companion.UnavailableClient{}
+	if cfg.Companion.Enabled {
+		httpCompanionClient, err := companion.NewHTTPClient(
+			cfg.Companion.BaseURL,
+			cfg.Companion.APIKey,
+			cfg.Companion.Timeout,
+		)
+		if err != nil {
+			return fmt.Errorf("create companion client: %w", err)
+		}
+		companionClient = httpCompanionClient
+	}
+
+	chatRepository := chat.NewRepository(databasePool)
+	chatService, err := chat.NewService(
+		chatRepository,
+		secretCipher,
+		companionClient,
+		chat.ServiceConfig{
+			ConsentPolicyVersion: cfg.App.ConsentPolicyVersion,
+			HistoryMessages:      cfg.Companion.HistoryMessages,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create chat service: %w", err)
+	}
+	chatHandler := httpapi.NewChatHandler(chatService)
+	careRepository := care.NewRepository(databasePool)
+	careService, err := care.NewService(
+		careRepository,
+		care.ServiceConfig{
+			InvitationTTL:        cfg.App.InvitationTTL,
+			ConsentPolicyVersion: cfg.App.ConsentPolicyVersion,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create care service: %w", err)
+	}
+	careHandler := httpapi.NewCareHandler(careService)
+	insightRepository := insight.NewRepository(databasePool)
+	insightService, err := insight.NewService(
+		insightRepository,
+		secretCipher,
+		companionClient,
+		insight.ServiceConfig{ConsentPolicyVersion: cfg.App.ConsentPolicyVersion},
+	)
+	if err != nil {
+		return fmt.Errorf("create insight service: %w", err)
+	}
+	insightHandler := httpapi.NewInsightHandler(insightService)
+
+	router := httpapi.NewRouter(
+		authHandler, chatHandler, careHandler, insightHandler, cfg.Auth.AllowedOrigins,
+	)
 
 	server := http.Server{
-		Addr:              ":8080",
+		Addr:              cfg.HTTP.Address,
 		Handler:           router,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTP.ReadTimeout,
+		WriteTimeout:      cfg.HTTP.WriteTimeout,
+		IdleTimeout:       cfg.HTTP.IdleTimeout,
+		MaxHeaderBytes:    cfg.HTTP.MaxHeaderBytes,
 	}
 
 	serverErrors := make(chan error, 1)
@@ -59,7 +200,7 @@ func run() error {
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(
 		context.Background(),
-		10*time.Second,
+		cfg.HTTP.ShutdownTimeout,
 	)
 	defer cancelShutdown()
 
@@ -67,10 +208,10 @@ func run() error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 
-	err := <-serverErrors
+	serverErr := <-serverErrors
 
-	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("HTTP server stopped during shutdown: %w", err)
+	if serverErr != nil && !errors.Is(serverErr, http.ErrServerClosed) {
+		return fmt.Errorf("HTTP server stopped during shutdown: %w", serverErr)
 	}
 
 	slog.Info("HTTP server stopped")

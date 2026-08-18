@@ -1,0 +1,427 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+func (r *Repository) CreateAccount(
+	ctx context.Context,
+	audience Audience,
+	email string,
+	passwordHash string,
+	displayName string,
+	verificationTokenHash string,
+	verificationExpiresAt time.Time,
+	client ClientInfo,
+) (string, error) {
+	table, identityColumn, err := accountTable(audience)
+	if err != nil {
+		return "", err
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin account transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s (email, password_hash, display_name)
+		VALUES ($1, $2, $3)
+		RETURNING id::text
+	`, table)
+
+	var accountID string
+	if err := tx.QueryRow(ctx, query, email, passwordHash, displayName).Scan(&accountID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return "", ErrConflict
+		}
+		return "", fmt.Errorf("insert account: %w", err)
+	}
+
+	insertTokenQuery := fmt.Sprintf(`
+		INSERT INTO auth_one_time_tokens (
+			audience,
+			%s,
+			purpose,
+			token_hash,
+			requested_ip,
+			user_agent,
+			expires_at
+		)
+		VALUES ($1, $2, 'email_verification', $3, NULLIF($4, '')::inet, NULLIF($5, ''), $6)
+	`, identityColumn)
+
+	if _, err := tx.Exec(
+		ctx,
+		insertTokenQuery,
+		audience,
+		accountID,
+		verificationTokenHash,
+		client.IPAddress,
+		client.UserAgent,
+		verificationExpiresAt,
+	); err != nil {
+		return "", fmt.Errorf("insert verification token: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit account transaction: %w", err)
+	}
+
+	return accountID, nil
+}
+
+func (r *Repository) FindAccountByEmail(
+	ctx context.Context,
+	audience Audience,
+	email string,
+) (Account, error) {
+	table, _, err := accountTable(audience)
+	if err != nil {
+		return Account{}, err
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id::text, email, password_hash, display_name, status, email_verified_at
+		FROM %s
+		WHERE email = $1 AND deleted_at IS NULL
+	`, table)
+
+	var account Account
+	err = r.pool.QueryRow(ctx, query, email).Scan(
+		&account.ID,
+		&account.Email,
+		&account.PasswordHash,
+		&account.DisplayName,
+		&account.Status,
+		&account.EmailVerifiedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("find account by email: %w", err)
+	}
+
+	return account, nil
+}
+
+func (r *Repository) FindAccountByID(
+	ctx context.Context,
+	audience Audience,
+	accountID string,
+) (Account, error) {
+	table, _, err := accountTable(audience)
+	if err != nil {
+		return Account{}, err
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id::text, email, password_hash, display_name, status, email_verified_at
+		FROM %s
+		WHERE id = $1 AND deleted_at IS NULL
+	`, table)
+
+	var account Account
+	err = r.pool.QueryRow(ctx, query, accountID).Scan(
+		&account.ID,
+		&account.Email,
+		&account.PasswordHash,
+		&account.DisplayName,
+		&account.Status,
+		&account.EmailVerifiedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("find account by ID: %w", err)
+	}
+
+	return account, nil
+}
+
+func (r *Repository) ReplaceOneTimeTokenByEmail(
+	ctx context.Context,
+	audience Audience,
+	email string,
+	purpose string,
+	tokenHash string,
+	expiresAt time.Time,
+	client ClientInfo,
+) (bool, error) {
+	table, identityColumn, err := accountTable(audience)
+	if err != nil {
+		return false, err
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin one-time token transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	findQuery := fmt.Sprintf(`
+		SELECT id::text
+		FROM %s
+		WHERE email = $1 AND deleted_at IS NULL
+	`, table)
+
+	var accountID string
+	if err := tx.QueryRow(ctx, findQuery, email).Scan(&accountID); errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("find account for one-time token: %w", err)
+	}
+
+	invalidateQuery := fmt.Sprintf(`
+		UPDATE auth_one_time_tokens
+		SET consumed_at = now()
+		WHERE audience = $1
+		  AND %s = $2
+		  AND purpose = $3
+		  AND consumed_at IS NULL
+	`, identityColumn)
+
+	if _, err := tx.Exec(ctx, invalidateQuery, audience, accountID, purpose); err != nil {
+		return false, fmt.Errorf("invalidate previous one-time tokens: %w", err)
+	}
+
+	insertQuery := fmt.Sprintf(`
+		INSERT INTO auth_one_time_tokens (
+			audience,
+			%s,
+			purpose,
+			token_hash,
+			requested_ip,
+			user_agent,
+			expires_at
+		)
+		VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet, NULLIF($6, ''), $7)
+	`, identityColumn)
+
+	if _, err := tx.Exec(
+		ctx,
+		insertQuery,
+		audience,
+		accountID,
+		purpose,
+		tokenHash,
+		client.IPAddress,
+		client.UserAgent,
+		expiresAt,
+	); err != nil {
+		return false, fmt.Errorf("insert one-time token: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit one-time token transaction: %w", err)
+	}
+
+	return true, nil
+}
+
+func (r *Repository) CreateOneTimeTokenForAccount(
+	ctx context.Context,
+	audience Audience,
+	accountID string,
+	purpose string,
+	tokenHash string,
+	expiresAt time.Time,
+	client ClientInfo,
+) error {
+	_, identityColumn, err := accountTable(audience)
+	if err != nil {
+		return err
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO auth_one_time_tokens (
+			audience,
+			%s,
+			purpose,
+			token_hash,
+			requested_ip,
+			user_agent,
+			expires_at
+		)
+		VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet, NULLIF($6, ''), $7)
+	`, identityColumn)
+
+	if _, err := r.pool.Exec(
+		ctx,
+		query,
+		audience,
+		accountID,
+		purpose,
+		tokenHash,
+		client.IPAddress,
+		client.UserAgent,
+		expiresAt,
+	); err != nil {
+		return fmt.Errorf("create one-time token: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) VerifyEmail(
+	ctx context.Context,
+	audience Audience,
+	tokenHash string,
+	now time.Time,
+) error {
+	table, identityColumn, err := accountTable(audience)
+	if err != nil {
+		return err
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin email verification transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	selectQuery := fmt.Sprintf(`
+		SELECT id::text, %s::text, expires_at, consumed_at
+		FROM auth_one_time_tokens
+		WHERE audience = $1 AND purpose = 'email_verification' AND token_hash = $2
+		FOR UPDATE
+	`, identityColumn)
+
+	var tokenID string
+	var accountID string
+	var expiresAt time.Time
+	var consumedAt *time.Time
+	if err := tx.QueryRow(ctx, selectQuery, audience, tokenHash).Scan(
+		&tokenID,
+		&accountID,
+		&expiresAt,
+		&consumedAt,
+	); errors.Is(err, pgx.ErrNoRows) {
+		return ErrInvalidToken
+	} else if err != nil {
+		return fmt.Errorf("select email verification token: %w", err)
+	}
+
+	if consumedAt != nil || !now.Before(expiresAt) {
+		return ErrInvalidToken
+	}
+
+	updateAccountQuery := fmt.Sprintf(`
+		UPDATE %s
+		SET status = 'active', email_verified_at = $2, updated_at = $2
+		WHERE id = $1 AND status = 'pending_verification'
+	`, table)
+
+	result, err := tx.Exec(ctx, updateAccountQuery, accountID, now)
+	if err != nil {
+		return fmt.Errorf("verify account email: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return ErrInvalidToken
+	}
+
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE auth_one_time_tokens SET consumed_at = $2 WHERE id = $1`,
+		tokenID,
+		now,
+	); err != nil {
+		return fmt.Errorf("consume email verification token: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit email verification transaction: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) ResetPassword(
+	ctx context.Context,
+	audience Audience,
+	tokenHash string,
+	passwordHash string,
+	now time.Time,
+) error {
+	table, identityColumn, err := accountTable(audience)
+	if err != nil {
+		return err
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin password reset transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	selectQuery := fmt.Sprintf(`
+		SELECT id::text, %s::text, expires_at, consumed_at
+		FROM auth_one_time_tokens
+		WHERE audience = $1 AND purpose = 'password_reset' AND token_hash = $2
+		FOR UPDATE
+	`, identityColumn)
+
+	var tokenID string
+	var accountID string
+	var expiresAt time.Time
+	var consumedAt *time.Time
+	if err := tx.QueryRow(ctx, selectQuery, audience, tokenHash).Scan(
+		&tokenID,
+		&accountID,
+		&expiresAt,
+		&consumedAt,
+	); errors.Is(err, pgx.ErrNoRows) {
+		return ErrInvalidToken
+	} else if err != nil {
+		return fmt.Errorf("select password reset token: %w", err)
+	}
+
+	if consumedAt != nil || !now.Before(expiresAt) {
+		return ErrInvalidToken
+	}
+
+	updateAccountQuery := fmt.Sprintf(`
+		UPDATE %s
+		SET password_hash = $2, updated_at = $3
+		WHERE id = $1 AND deleted_at IS NULL
+	`, table)
+
+	if _, err := tx.Exec(ctx, updateAccountQuery, accountID, passwordHash, now); err != nil {
+		return fmt.Errorf("update account password: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE auth_one_time_tokens SET consumed_at = $2 WHERE id = $1`,
+		tokenID,
+		now,
+	); err != nil {
+		return fmt.Errorf("consume password reset token: %w", err)
+	}
+
+	revokeQuery := fmt.Sprintf(`
+		UPDATE auth_sessions
+		SET revoked_at = $3, revoke_reason = 'password_reset'
+		WHERE audience = $1 AND %s = $2 AND revoked_at IS NULL
+	`, identityColumn)
+
+	if _, err := tx.Exec(ctx, revokeQuery, audience, accountID, now); err != nil {
+		return fmt.Errorf("revoke sessions after password reset: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit password reset transaction: %w", err)
+	}
+
+	return nil
+}
