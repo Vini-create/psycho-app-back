@@ -52,6 +52,19 @@ type storedItem struct {
 	OccurredAt            *time.Time
 }
 
+type storedJob struct {
+	ID                 string
+	ConnectionID       string
+	ProfessionalUserID string
+	PeriodStart        time.Time
+	PeriodEnd          time.Time
+	Status             string
+	AttemptCount       int
+	CompletedAt        *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
 type itemWrite struct {
 	Kind                  string
 	DescriptionCiphertext []byte
@@ -110,7 +123,7 @@ func (r *Repository) CreateJob(
 			connection_id, requested_by_professional_user_id,
 			period_start, period_end, status, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, 'processing', $5, $5)
+		VALUES ($1, $2, $3, $4, 'queued', $5, $5)
 		RETURNING id::text
 	`, connectionID, professionalUserID, periodStart, periodEnd, now).Scan(&jobID)
 	if err != nil {
@@ -121,6 +134,86 @@ func (r *Repository) CreateJob(
 		return "", fmt.Errorf("create context processing job: %w", err)
 	}
 	return jobID, nil
+}
+
+func (r *Repository) GetJob(
+	ctx context.Context,
+	professionalUserID string,
+	jobID string,
+) (storedJob, error) {
+	job, err := scanStoredJob(r.pool.QueryRow(ctx, `
+		SELECT id::text, connection_id::text, requested_by_professional_user_id::text,
+		       period_start, period_end, status, attempt_count, completed_at,
+		       created_at, updated_at
+		FROM context_processing_jobs
+		WHERE id = $1 AND requested_by_professional_user_id = $2
+	`, jobID, professionalUserID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return storedJob{}, ErrNotFound
+	}
+	if err != nil {
+		return storedJob{}, fmt.Errorf("get context processing job: %w", err)
+	}
+	return job, nil
+}
+
+func (r *Repository) ClaimNextJob(
+	ctx context.Context,
+	now time.Time,
+	staleBefore time.Time,
+) (storedJob, bool, error) {
+	job, err := scanStoredJob(r.pool.QueryRow(ctx, `
+		WITH candidate AS (
+			SELECT id
+			FROM context_processing_jobs
+			WHERE (
+				status = 'queued' AND available_at <= $1
+			) OR (
+				status = 'processing' AND claimed_at < $2
+			)
+			ORDER BY available_at, created_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1
+		)
+		UPDATE context_processing_jobs AS job
+		SET status = 'processing', claimed_at = $1,
+		    attempt_count = attempt_count + 1, updated_at = $1
+		FROM candidate
+		WHERE job.id = candidate.id
+		RETURNING job.id::text, job.connection_id::text,
+		          job.requested_by_professional_user_id::text,
+		          job.period_start, job.period_end, job.status, job.attempt_count,
+		          job.completed_at, job.created_at, job.updated_at
+	`, now, staleBefore))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return storedJob{}, false, nil
+	}
+	if err != nil {
+		return storedJob{}, false, fmt.Errorf("claim context processing job: %w", err)
+	}
+	return job, true, nil
+}
+
+func (r *Repository) RetryJob(
+	ctx context.Context,
+	jobID string,
+	failureCode string,
+	availableAt time.Time,
+	now time.Time,
+) error {
+	result, err := r.pool.Exec(ctx, `
+		UPDATE context_processing_jobs
+		SET status = 'queued', failure_code = $2, available_at = $3,
+		    claimed_at = NULL, updated_at = $4
+		WHERE id = $1 AND status = 'processing'
+	`, jobID, failureCode, availableAt, now)
+	if err != nil {
+		return fmt.Errorf("retry context processing job: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (r *Repository) LoadSourceMessages(
@@ -169,7 +262,7 @@ func (r *Repository) FailJob(
 ) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE context_processing_jobs
-		SET status = 'failed', failure_code = $2, updated_at = $3
+		SET status = 'failed', failure_code = $2, claimed_at = NULL, updated_at = $3
 		WHERE id = $1 AND status = 'processing'
 	`, jobID, failureCode, now)
 	if err != nil {
@@ -199,7 +292,8 @@ func (r *Repository) CompleteJob(
 
 	result, err := tx.Exec(ctx, `
 		UPDATE context_processing_jobs
-		SET status = 'completed', failure_code = NULL, completed_at = $2, updated_at = $2
+		SET status = 'completed', failure_code = NULL, completed_at = $2,
+		    claimed_at = NULL, updated_at = $2
 		WHERE id = $1 AND connection_id = $3 AND status = 'processing'
 	`, jobID, now, connectionID)
 	if err != nil {
@@ -250,6 +344,20 @@ func (r *Repository) CompleteJob(
 		return "", fmt.Errorf("commit context completion: %w", err)
 	}
 	return summaryID, nil
+}
+
+func scanStoredJob(row rowScanner) (storedJob, error) {
+	var job storedJob
+	err := row.Scan(
+		&job.ID, &job.ConnectionID, &job.ProfessionalUserID,
+		&job.PeriodStart, &job.PeriodEnd, &job.Status, &job.AttemptCount,
+		&job.CompletedAt, &job.CreatedAt, &job.UpdatedAt,
+	)
+	return job, err
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
 }
 
 func (r *Repository) ListSummaries(

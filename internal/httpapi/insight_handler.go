@@ -31,6 +31,10 @@ func (h *InsightHandler) RegisterRoutes(mux *http.ServeMux, authHandler *AuthHan
 		"GET /v1/professional/patients/{connectionID}/contexts",
 		requireProfessional(h.list),
 	)
+	mux.HandleFunc(
+		"GET /v1/professional/context-jobs/{jobID}",
+		requireProfessional(h.getJob),
+	)
 }
 
 func (h *InsightHandler) generate(w http.ResponseWriter, r *http.Request) {
@@ -55,11 +59,17 @@ func (h *InsightHandler) generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := http.StatusCreated
-	if result.Status != "completed" {
-		status = http.StatusAccepted
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (h *InsightHandler) getJob(w http.ResponseWriter, r *http.Request) {
+	principal := principalFromContext(r.Context())
+	job, err := h.service.GetJob(r.Context(), principal.AccountID, r.PathValue("jobID"))
+	if err != nil {
+		h.handleError(w, err)
+		return
 	}
-	writeJSON(w, status, result)
+	writeJSON(w, http.StatusOK, job)
 }
 
 func (h *InsightHandler) list(w http.ResponseWriter, r *http.Request) {

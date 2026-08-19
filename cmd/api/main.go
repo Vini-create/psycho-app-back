@@ -157,12 +157,35 @@ func run() error {
 		insightRepository,
 		secretCipher,
 		companionClient,
-		insight.ServiceConfig{ConsentPolicyVersion: cfg.App.ConsentPolicyVersion},
+		insight.ServiceConfig{
+			ConsentPolicyVersion: cfg.App.ConsentPolicyVersion,
+			WorkerLease:          cfg.Companion.ContextWorkerLease,
+			MaxAttempts:          cfg.Companion.ContextWorkerMaxAttempts,
+		},
 	)
 	if err != nil {
 		return fmt.Errorf("create insight service: %w", err)
 	}
 	insightHandler := httpapi.NewInsightHandler(insightService)
+	var contextWorkerDone chan struct{}
+	if cfg.Companion.ContextWorkerEnabled {
+		contextWorker, err := insight.NewWorker(insightService, insight.WorkerConfig{
+			Concurrency:  cfg.Companion.ContextWorkerConcurrency,
+			PollInterval: cfg.Companion.ContextWorkerPoll,
+		})
+		if err != nil {
+			return fmt.Errorf("create insight worker: %w", err)
+		}
+		contextWorkerDone = make(chan struct{})
+		go func() {
+			defer close(contextWorkerDone)
+			contextWorker.Run(signalCtx)
+		}()
+		slog.Info(
+			"context workers started",
+			"concurrency", cfg.Companion.ContextWorkerConcurrency,
+		)
+	}
 
 	router := httpapi.NewRouter(
 		authHandler, chatHandler, careHandler, insightHandler, cfg.Auth.AllowedOrigins,
@@ -212,6 +235,13 @@ func run() error {
 
 	if serverErr != nil && !errors.Is(serverErr, http.ErrServerClosed) {
 		return fmt.Errorf("HTTP server stopped during shutdown: %w", serverErr)
+	}
+	if contextWorkerDone != nil {
+		select {
+		case <-contextWorkerDone:
+		case <-shutdownCtx.Done():
+			return fmt.Errorf("wait for context workers: %w", shutdownCtx.Err())
+		}
 	}
 
 	slog.Info("HTTP server stopped")

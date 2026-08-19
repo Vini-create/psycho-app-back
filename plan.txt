@@ -1,0 +1,1061 @@
+ótimo , gosto tambem de um node gateway de segurança logo no input para ja detectar tambem prompt injection, e como nosso app deve ser aplicavel internacionalmente tambem , um nó de tradução para o ingles e detect language no começo, e no fim do grafo a tradução de volta para a detected language,  da forma como fizemos naquele projeto do app de rotina com o alfred , qualquer coisa da uma consultada la
+
+
+
+
+
+
+10:51 AM
+
+
+
+
+
+
+Worked for 1m 11s
+
+
+
+Perfeito. Consultei o Alfred e confirmei o padrão: entrada no idioma original, normalização para inglês como idioma canônico e resposta final no idioma do usuário.
+Para o Anamnesys, eu refinaria esse padrão com segurança em profundidade.
+Novo desenho do grafo
+START
+  │
+  ▼
+validate_input
+  │
+  ├───────────────┐
+  ▼               ▼
+detect_language   input_security_gateway
+  │               │
+  └───────┬───────┘
+          │
+          ▼
+     route_gateway
+          │
+          ├── block ─────────────► safe_block_response
+          │
+          └── allow
+                │
+                ▼
+       translate_to_english
+                │
+                ▼
+      semantic_safety_triage
+                │
+       ┌────────┼─────────┐
+       │        │         │
+     crisis   boundary   normal
+       │        │         │
+       ▼        ▼         ▼
+ crisis_flow  safe_flow  classify_intent
+                            │
+                            ▼
+                     plan_response
+                            │
+                            ▼
+                    generate_response
+                            │
+                            ▼
+                  validate_in_english
+                            │
+                         inválida
+                            │
+                       rewrite_once
+                            │
+                            ▼
+                 translate_to_original
+                            │
+                            ▼
+                  localized_output_gate
+                            │
+                            ▼
+                           END
+Por que teremos dois gateways
+O input_security_gateway será realmente o primeiro perímetro. Ele analisará o texto original para encontrar:
+prompt injection;
+jailbreak;
+tentativa de revelar system prompt;
+tentativa de alterar regras;
+conteúdo excessivamente grande;
+texto codificado ou ofuscado;
+instruções para acessar dados de outros usuários;
+abuso futuro de ferramentas;
+payloads suspeitos.
+Entretanto, não podemos depender somente dele. Um classificador pode ser menos competente em idiomas raros. Depois da tradução para inglês, o semantic_safety_triage faz uma segunda análise mais profunda:
+autoagressão;
+risco de suicídio;
+violência;
+emergência médica;
+abuso;
+medicação;
+sofrimento emocional intenso;
+limites clínicos;
+dependência emocional do companion.
+Isso melhora o padrão do Alfred: lá a documentação colocava a tradução antes do Security Gate. Aqui teremos um gateway de perímetro antes da tradução e uma triagem semântica depois dela.
+Detecção de idioma
+O state ganhará:
+original_language: str
+language_confidence: float
+locale_hint: str | None
+original_message: str
+canonical_message: str
+canonical_history: list[ChatMessage]
+translation_required: bool
+Usaremos códigos BCP 47:
+pt-BR
+en-US
+es-ES
+fr-FR
+de-DE
+A estratégia econômica será:
+receber futuramente locale_hint do frontend;
+validar o idioma localmente;
+usar um modelo pequeno somente quando houver ambiguidade;
+não traduzir quando o conteúdo já estiver em inglês;
+traduzir mensagem e histórico em lote, e não mensagem por mensagem.
+Para textos muito curtos como “sim”, “ok” ou “não sei”, a detecção automática é pouco confiável. Nesses casos, preservamos o idioma anterior da conversa ou usamos o locale_hint.
+Tradução para inglês
+O inglês será o idioma canônico interno para:
+classificação;
+prompts;
+safety;
+RAG futuro;
+avaliações;
+estratégias conversacionais;
+geração inicial.
+O node deve preservar os dois textos:
+original_message = "Eu não estou conseguindo dormir."
+canonical_message = "I haven't been able to sleep."
+Nunca substituiremos o original. Isso é importante porque traduções podem perder:
+intensidade emocional;
+gírias;
+ambiguidade;
+formas culturais de expressar sofrimento;
+negações;
+referências temporais.
+Para mensagens de risco, o gateway mantém evidências tanto do texto original quanto da tradução.
+Tradução de saída
+A resposta será criada e validada em inglês, depois traduzida para o idioma detectado.
+O tradutor receberá instruções para manter:
+tom acolhedor;
+significado;
+perguntas;
+cautela e incerteza;
+instruções de segurança;
+nomes próprios;
+contatos e números de emergência;
+estrutura da resposta.
+Ele não poderá “melhorar” nem reinterpretar a resposta.
+Depois haverá o localized_output_gate, porque uma tradução pode acidentalmente:
+inverter uma negação;
+suavizar uma emergência;
+alterar uma instrução;
+introduzir linguagem diagnóstica;
+traduzir incorretamente um contato de emergência.
+Casos críticos podem utilizar templates localizados e previamente aprovados, evitando depender inteiramente do LLM.
+Internacionalização de emergência
+Idioma e localização são informações diferentes.
+Alguém pode falar português morando no Japão. Portanto, não usaremos o idioma para adivinhar contatos de emergência. Futuramente o request deverá trazer separadamente:
+{
+  "locale_hint": "pt-BR",
+  "country_code": "JP",
+  "timezone": "Asia/Tokyo"
+}
+O país deve vir das configurações do usuário, com consentimento, e não de uma inferência silenciosa feita pelo modelo.
+Custo da tradução
+Esse desenho poderia gerar até três chamadas:
+tradução de entrada;
+geração conversacional;
+tradução de saída.
+Para mantê-lo barato:
+inglês pula as duas traduções;
+detecção primária será local;
+tradução usa modelo pequeno;
+classificação simples será determinística quando possível;
+tradução do input e histórico acontece em uma única chamada;
+respostas críticas conhecidas usam templates localizados;
+não haverá um agente tradutor com loops;
+somente uma reescrita será permitida;
+métricas registrarão custo por node.
+Mais adiante podemos comparar custo e qualidade entre “gerar em inglês e traduzir” e “gerar diretamente no idioma original”. Para idiomas muito bem suportados, a segunda opção pode ser melhor e mais barata, mas manteremos o pipeline canônico solicitado inicialmente.
+Estado de segurança
+O gateway devolverá um contrato estruturado, aproximadamente:
+class GatewayDecision(BaseModel):
+    decision: Literal["allow", "block", "review"]
+    threats: list[
+        Literal[
+            "prompt_injection",
+            "jailbreak",
+            "system_prompt_extraction",
+            "data_exfiltration",
+            "encoded_payload",
+            "tool_abuse",
+        ]
+    ]
+    confidence: float
+    safe_reason_code: str | None
+safe_reason_code será um código técnico, sem copiar a mensagem do usuário. Assim podemos observar ataques sem colocar conteúdo sensível nos logs.
+O próximo passo técnico passa a ser implementar o esqueleto desse grafo com os nodes mock:
+ampliar os schemas;
+criar ConversationState;
+criar o StateGraph;
+implementar gateway, idioma e tradução mock;
+ligar o provider mock ao grafo;
+adicionar testes para português, inglês, espanhol e prompt injection.
+Aguardarei sua autorização antes de modificar o projeto.
+
+
+10:53 AM
+
+
+
+
+
+
+
+
+boa , a segurança esta boa, agora vamos definir a parte coversacional do modelo que é o que vai fazer a experiencia do usuario, fazer ele querer conversar, 
+
+
+
+
+
+
+11:12 AM
+
+
+
+
+
+
+Worked for 1m 27s
+
+
+
+A camada conversacional não deve ser construída para “prender” o usuário, mas para fazê-lo querer voltar porque se sentiu compreendido, ganhou clareza e manteve autonomia. Em saúde mental, otimizar tempo de tela ou dependência emocional seria perigoso.
+Estudos recentes sobre chatbots de saúde mental apontam continuidade, comunicação coloquial, espaço sem julgamento, utilidade percebida e flexibilidade entre “conduzir” e “ser conduzido” como elementos importantes para o vínculo. A aliança percebida também aparece associada ao engajamento. JMIR Mental Health, ensaio clínico no JAMA Network Open.
+Identidade conversacional
+O Anamnesys será um companion reflexivo:
+não se apresenta como terapeuta;
+não diagnostica;
+não tenta resolver tudo;
+ajuda a pessoa a se expressar;
+percebe continuidades e contradições;
+organiza pensamentos;
+oferece caminhos quando a pessoa quer;
+sabe apenas acompanhar quando ela não quer uma solução;
+reconhece seus próprios limites.
+A sensação desejada é:
+“Ele realmente entendeu o que eu quis dizer e respondeu àquilo, não apenas ao assunto.”
+
+Grafo conversacional refinado
+A parte central ficará assim:
+semantic_understanding
+        │
+        ▼
+select_continuity_context
+        │
+        ▼
+choose_conversation_mode
+        │
+        ▼
+choose_response_moves
+        │
+        ├── necessidade de conhecimento ─► retrieve_evidence
+        │
+        └── conversa reflexiva ──────────► sem RAG
+                          │
+                          ▼
+                 generate_response
+                          │
+                          ▼
+              conversational_quality_gate
+                          │
+                   ┌──────┴──────┐
+                   │             │
+                 válida       reparar
+                   │             │
+                   └──────┬──────┘
+                          ▼
+                 localize_response
+1. Compreensão semântica
+O primeiro node conversacional não escreve a resposta. Ele cria uma leitura estruturada do turno:
+class ConversationUnderstanding(BaseModel):
+    explicit_request: str | None
+    primary_need: Literal[
+        "be_heard",
+        "explore",
+        "clarify",
+        "organize",
+        "get_information",
+        "make_decision",
+        "make_plan",
+        "celebrate",
+        "close_conversation",
+    ]
+    emotion_hypotheses: list[EmotionHypothesis]
+    readiness_for_action: Literal["low", "uncertain", "high"]
+    preferred_lead: Literal["user", "companion", "shared"]
+    ambiguity: float
+    continuity_relevant: bool
+Emoções serão hipóteses, não fatos:
+{
+  "emotion": "frustration",
+  "confidence": 0.67,
+  "evidence": "user described postponing something again"
+}
+O modelo deve dizer “parece que isso te frustrou” em vez de “você está frustrado”.
+2. Contexto de continuidade
+Este node seleciona somente lembranças relevantes:
+algo que a pessoa queria fazer;
+uma dificuldade mencionada anteriormente;
+preferência de estilo;
+uma decisão tomada;
+uma pergunta que ficou aberta;
+algo que ela pediu para retomar depois.
+Não colocaremos todo o histórico no prompt.
+O modelo também não poderá inventar memória. Quando a confiança for baixa:
+“Se entendi direito, você tinha comentado…”
+
+Nunca:
+“Eu lembro perfeitamente…”
+
+Informações derivadas como diagnóstico, personalidade ou “traços” não serão transformadas em memória permanente.
+3. Modos de conversa
+O companion terá modos internos, escolhidos a cada turno.
+listen
+Quando a pessoa quer falar e não quer solução.
+acolher;
+refletir algo específico;
+não apresentar checklist;
+não transformar o relato em exercício;
+não terminar obrigatoriamente com pergunta.
+explore
+Ajuda a pessoa a compreender o que aconteceu.
+uma pergunta por vez;
+explorar fatos, significados e necessidades;
+evitar interrogatório;
+não sugerir uma causa como certeza.
+organize
+Usado para relatos longos ou confusos.
+separar acontecimentos, pensamentos e preocupações;
+produzir uma síntese curta;
+confirmar se a leitura está correta.
+clarify
+Quando existe ambiguidade importante.
+fazer uma pergunta simples;
+não gerar um conselho apoiado em suposições.
+reframe
+Oferece outra perspectiva sem invalidar a atual.
+linguagem tentativa;
+preservar a autonomia;
+evitar positividade forçada.
+plan
+Somente quando a pessoa quer agir.
+uma ação pequena e concreta;
+considerar energia e contexto reais;
+oferecer opções;
+permitir que o usuário rejeite a sugestão.
+gentle_challenge
+Aponta contradições com respeito.
+“Uma parte sua parece querer mudar isso, mas outra ainda está tentando se proteger de alguma coisa. Faz sentido ou estou interpretando demais?”
+
+follow_up
+Retoma algo anterior com precisão.
+“Você tinha decidido conversar com ela depois do trabalho. Como foi?”
+
+celebrate
+Reconhece progresso sem exagero e sem elogio infantilizado.
+closure
+Ajuda a encerrar:
+síntese breve;
+algo que vale levar da conversa;
+não tentar artificialmente prolongar o diálogo.
+4. Movimentos de resposta
+Uma resposta normalmente utilizará um ou dois movimentos:
+reconhecer um detalhe;
+refletir significado;
+validar sem concordar cegamente;
+esclarecer;
+resumir;
+perguntar;
+reformular;
+oferecer escolha;
+propor um pequeno próximo passo;
+retomar algo anterior;
+reconhecer progresso;
+reparar um mal-entendido.
+O modelo não seguirá sempre a mesma fórmula. Se toda resposta tiver “validação + reflexão + pergunta”, rapidamente parecerá robótico.
+5. Regras de naturalidade
+geralmente uma pergunta por resposta;
+algumas respostas não terão pergunta;
+acompanhar aproximadamente o tamanho e o ritmo do usuário;
+usar linguagem coloquial compatível com o idioma;
+não imitar erros ortográficos;
+não usar emojis por padrão;
+não repetir o nome do usuário artificialmente;
+evitar listas quando a pessoa está vulnerável;
+evitar frases prontas repetitivas;
+não começar sempre com “sinto muito”;
+não elogiar tudo;
+não oferecer exercício em todo problema;
+não usar linguagem clínica sem necessidade;
+não terminar sempre com “quer conversar mais sobre isso?”.
+A sincronização moderada de estilo e a escuta reflexiva estão relacionadas à percepção de empatia, mas confronto tende a prejudicar aliança e engajamento. Estudo sobre sincronização da linguagem, estudo sobre entrevista motivacional e aliança.
+6. Planejamento da resposta
+Antes de escrever, o grafo produz um plano interno pequeno:
+{
+  "mode": "explore",
+  "moves": ["specific_reflection", "open_question"],
+  "tone": "warm_and_grounded",
+  "length": "short",
+  "continuity_hook": null,
+  "avoid": [
+    "premature_advice",
+    "diagnosis",
+    "generic_reassurance"
+  ]
+}
+Esse plano nunca é mostrado ao usuário.
+Para reduzir custo, compreensão e planejamento podem ser feitos em uma única chamada estruturada com modelo pequeno. A resposta natural é produzida pelo modelo conversacional principal.
+7. Localização, não tradução literal
+No final, o node deveria se chamar localize_response.
+Em conversas comuns, ele adapta a resposta para soar natural no idioma e cultura do usuário. Em situações críticas, usa tradução estrita ou template aprovado, preservando exatamente as orientações de segurança.
+Assim evitamos respostas que parecem ter sido escritas em inglês e traduzidas mecanicamente.
+8. Quality gate conversacional
+A resposta será avaliada por:
+respondeu ao que a pessoa realmente disse?
+contém um detalhe específico?
+inventou alguma emoção ou memória?
+avançou a conversa de maneira adequada?
+deu conselho sem permissão?
+parece genérica?
+está longa demais?
+repetiu uma construção recente?
+respeitou autonomia?
+gerou dependência emocional?
+sugeriu que a IA é humana ou terapeuta?
+fez perguntas demais?
+A reescrita acontece somente quando alguma dimensão importante falhar.
+Exemplo
+Usuário:
+“Eu disse que começaria hoje e passei o dia adiando de novo.”
+
+Resposta genérica:
+“Entendo como isso pode ser frustrante. Tente dividir a tarefa em etapas menores. O que você acha?”
+
+Resposta desejada:
+“Parece que o peso não foi só adiar, mas terminar o dia encarando de novo a distância entre o que você queria fazer e o que conseguiu. O mais difícil hoje foi começar ou permanecer na tarefa depois de começar?”
+
+Ela é específica, não diagnostica, não oferece uma solução prematura e faz apenas uma pergunta útil.
+Se o usuário responder:
+“Não quero estratégia agora, só estou puto comigo.”
+
+O companion muda imediatamente para listen:
+“Entendi. Então não vou tentar transformar isso num plano agora. Você está cansado de chegar nesse mesmo ponto e ter que lidar com a cobrança depois.”
+
+Sem exercício e sem forçar outra pergunta.
+Métricas certas
+Não devemos avaliar sucesso por número de mensagens ou duração da sessão. As métricas principais serão:
+senti que fui compreendido;
+resposta foi relevante;
+conversa ajudou a obter clareza;
+autonomia foi respeitada;
+continuidade estava correta;
+linguagem pareceu natural;
+ausência de repetição;
+ausência de memória inventada;
+ausência de dependência emocional;
+custo e latência por resposta.
+Esse passa a ser o núcleo da experiência: compreender, escolher como acompanhar e só então responder. O próximo passo é transformar essa política em contratos Pydantic, nodes e testes multi-turno. Aguardarei sua autorização antes de escrever no projeto.
+
+
+11:13 AM
+
+
+
+
+
+
+
+
+Ótimo, só não vejo tanta necessidade do rag aqui
+
+
+
+
+
+
+11:25 AM
+
+
+
+
+
+
+Concordo. Para o núcleo conversacional, RAG provavelmente prejudicaria mais do que ajudaria agora:
+aumenta latência e custo;
+introduz documentos no contexto mesmo quando o usuário só quer conversar;
+pode deixar as respostas didáticas e artificiais;
+adiciona complexidade de indexação, fontes e avaliação;
+não é necessário para escuta, reflexão, continuidade e planejamento conversacional.
+O grafo principal fica:
+input_security_gateway
+        │
+detect_language
+        │
+translate_to_english
+        │
+semantic_safety_triage
+        │
+semantic_understanding
+        │
+select_continuity_context
+        │
+choose_conversation_mode
+        │
+choose_response_moves
+        │
+generate_response
+        │
+conversational_quality_gate
+        │
+localize_response
+        │
+localized_output_gate
+É importante separar dois conceitos:
+Memória conversacional: contexto do próprio usuário, fornecido com segurança pelo Go. Isso permanece.
+RAG: busca em uma base externa de documentos e conhecimento. Isso sai do fluxo inicial.
+Para perguntas clínicas ou científicas, o companion terá limites explícitos:
+pode oferecer informação geral e cautelosa;
+não diagnostica;
+não prescreve;
+sinaliza incerteza;
+recomenda profissional quando apropriado;
+não inventa fontes ou evidências.
+No futuro, se houver necessidade real, podemos adicionar uma ferramenta de conhecimento curado somente para situações específicas, como informações institucionais, funcionamento da plataforma e recursos oficiais por país. Ela não precisará fazer parte de toda conversa.
+Para o MVP, eu deixaria completamente sem RAG e concentraria o esforço onde realmente cria valor: prompt, memória, seleção de movimentos conversacionais, personalidade, segurança e avaliações multi-turno.
+
+
+11:25 AM
+
+
+
+
+
+
+
+
+Perfeito. Agora vamos para a parte do que sera enviado aos profissionais conectados.
+eu acho que isso deve ir alem de um simples resumo de conversa, mas não deve assumir papel de uma analise profissional. deve ser um relatorio completo comportamental com evidencias e de contexto sobre o que se passou na vida do usuario em determinado tempo de conversa, sobre o que foi conversado, quais foram os desafios enfrentados por ele, os acontecimentos relevantes e tudo mais, para realmente dar contexto ao psicologo quanco chegar na consulta e não passar metade do tempo perguntando quem é a pessoa o o que aconteceu na ultima semana.
+
+
+
+
+
+
+11:40 AM
+
+
+
+
+
+
+Worked for 1m 50s
+
+
+
+Exatamente. Eu chamaria isso de Relatório de Contexto e Jornada, não “análise comportamental”, porque o segundo nome pode sugerir avaliação clínica feita pela IA.
+O objetivo é permitir que o profissional entenda rapidamente:
+o que aconteceu no período;
+o que mais ocupou a mente do paciente;
+quais desafios apareceram;
+como a pessoa reagiu;
+o que tentou fazer;
+o que ajudou ou não ajudou;
+o que mudou;
+quais assuntos continuam abertos;
+o que o paciente deseja levar para a consulta.
+Ele será completo, mas organizado em camadas para o psicólogo entender o essencial em menos de um minuto e aprofundar somente onde precisar.
+Estrutura do relatório
+1. Identificação e cobertura
+Período: 12 a 19 de agosto
+Conversas consideradas: 6
+Mensagens do usuário: 43
+Dias com interação: 4 de 7
+Cobertura: parcial
+“Cobertura parcial” é importante: se a pessoa não falou sobre sono, não podemos concluir que dormiu bem nem que não houve problemas.
+2. Resumo executivo
+Um panorama curto, com 5 a 8 linhas:
+Durante o período, o usuário relatou aumento de pressão no trabalho após uma mudança de responsabilidade. Descreveu dificuldade recorrente para iniciar tarefas importantes e autocobrança ao final do dia. Também mencionou uma conversa difícil com a mãe e preocupação com despesas inesperadas. Tentou organizar o trabalho em blocos menores, relatando melhora em um dos três dias mencionados. O tema que permaneceu aberto foi o receio de decepcionar pessoas próximas.
+
+Sem diagnóstico, interpretação de personalidade ou conclusão causal.
+3. Prioridades escolhidas pelo usuário
+Esta deve ser uma seção de destaque:
+“Quero conversar sobre a pressão no trabalho.”
+“Não sei por que evito falar com minha mãe.”
+“Quero entender por que estou me cobrando tanto.”
+Parte dessas prioridades pode ser detectada, mas o ideal é permitir que o usuário marque explicitamente:
+“Quero levar este assunto para minha próxima consulta.”
+
+4. Linha do tempo
+12 ago — recebeu uma nova responsabilidade no trabalho.
+13 ago — adiou uma entrega e relatou forte autocobrança.
+15 ago — discutiu com a mãe após evitar uma conversa.
+16 ago — tentou trabalhar em blocos curtos e concluiu parte da tarefa.
+18 ago — relatou preocupação com uma despesa inesperada.
+A linha do tempo evita transformar acontecimentos temporários em características permanentes da pessoa.
+5. Acontecimentos relevantes
+Cada acontecimento terá:
+descrição neutra;
+quando ocorreu;
+pessoas ou áreas envolvidas;
+impacto relatado;
+evidências que sustentam o item;
+incertezas ou informações ausentes.
+Exemplo:
+Acontecimento:
+Nova responsabilidade no trabalho.
+
+Impacto relatado:
+Aumento de pressão e receio de não corresponder às expectativas.
+
+Evidência:
+O assunto apareceu explicitamente em duas conversas, nos dias 12 e 14.
+
+Limitação:
+Não foi informado se a mudança é temporária ou permanente.
+6. Desafios enfrentados
+Organizados por domínio, somente quando aparecerem:
+trabalho ou estudo;
+relações familiares;
+relacionamentos;
+vida social;
+rotina;
+sono;
+autocuidado;
+finanças;
+saúde;
+tomada de decisão;
+mudanças importantes;
+perdas;
+solidão;
+conflitos;
+organização pessoal.
+Não haverá um checklist exibindo domínios não mencionados.
+7. Experiências emocionais relatadas
+Usaremos distinções explícitas:
+Relatado diretamente:
+“Fiquei frustrado comigo.”
+
+Sugerido pelo contexto:
+Possível preocupação relacionada ao trabalho.
+
+Não determinado:
+Não há evidência suficiente para caracterizar frequência ou intensidade.
+Idealmente, o relatório profissional trabalha majoritariamente com emoções que o próprio usuário nomeou. Inferências devem ser raras e claramente marcadas.
+8. Pensamentos e interpretações relatados
+Não chamaremos de “distorções cognitivas”. Mostraremos apenas como a pessoa descreveu sua experiência:
+medo de decepcionar;
+expectativa de que algo dará errado;
+autocobrança;
+dúvida entre duas decisões;
+percepção de falta de controle;
+preocupação com a opinião de outras pessoas.
+O profissional decide se isso tem significado clínico.
+9. Comportamentos e rotina
+Podemos descrever:
+adiamentos;
+aproximações e evitamentos;
+mudanças de rotina;
+isolamento relatado;
+busca de apoio;
+frequência aproximada;
+tentativas de resolver problemas;
+atividades interrompidas ou retomadas.
+A linguagem deve ser temporal:
+“Relatou ter adiado duas tarefas durante o período.”
+
+Não:
+“Apresenta um padrão procrastinador.”
+
+10. Estratégias tentadas e resultados percebidos
+Essa seção será especialmente útil:
+Estratégia:
+Dividir o trabalho em blocos menores.
+
+Resultado relatado:
+Ajudou a começar em um dos dias, mas não foi repetida nos dias seguintes.
+
+Percepção do usuário:
+Disse que a estratégia tornou a tarefa menos pesada.
+Também registraremos:
+apoio buscado;
+conversas realizadas;
+descanso;
+escrita;
+organização;
+estabelecimento de limites;
+exercícios sugeridos pelo companion e efetivamente tentados.
+Uma sugestão feita pela IA não conta como ação do usuário até ele confirmar que tentou.
+11. Recursos, forças e fatores de apoio
+Para que o relatório não seja uma lista de problemas:
+pessoas de confiança;
+capacidade de pedir ajuda;
+estratégias que funcionaram;
+decisões coerentes com seus objetivos;
+atividades significativas;
+avanços;
+limites estabelecidos;
+recursos externos disponíveis.
+Novamente, tudo precisa estar sustentado pelo relato.
+12. Mudanças no período
+Quando houver relatório anterior:
+Apareceu com maior frequência:
+Preocupação com desempenho profissional.
+
+Reduziu:
+Conflitos relacionados à organização da rotina.
+
+Novo no período:
+Despesa inesperada.
+
+Permaneceu em aberto:
+Conversa com a mãe.
+Não criaremos gráficos emocionais pseudoexatos nem “score de ansiedade”. Frequência de menções não equivale a gravidade clínica.
+13. Questões em aberto
+decisões ainda não tomadas;
+conversas adiadas;
+acontecimentos aguardados;
+dúvidas expressas;
+estratégias que o usuário queria testar;
+assuntos interrompidos.
+Podemos apresentar ao profissional como:
+“Possíveis pontos para explorar, sujeitos ao julgamento profissional.”
+
+14. Contexto de segurança
+Se houver algo relevante, ficará separado e factual:
+o que o usuário declarou;
+data;
+se indicou situação atual ou passada;
+qual protocolo de segurança foi acionado;
+quais orientações foram apresentadas;
+limitações da informação disponível.
+O profissional conectado não deve ser tratado automaticamente como serviço de emergência. Uma situação crítica precisa ser atendida pelo fluxo de segurança imediatamente, e não esperar o relatório periódico.
+Evidências
+A evidência do relatório deve vir exclusivamente das mensagens do usuário. Respostas ou sugestões do companion nunca serão utilizadas como prova.
+Cada afirmação terá internamente:
+class EvidenceReference(BaseModel):
+    source_message_id: UUID
+    occurred_at: datetime
+    attribution: Literal[
+        "user_reported",
+        "user_confirmed",
+        "user_marked_for_sharing",
+    ]
+    subject: Literal["self", "other_person", "hypothetical"]
+    temporal_scope: Literal["current", "recent", "historical", "unknown"]
+Em vez de uma falsa precisão como confidence: 0.87, prefiro:
+evidence_strength: Literal[
+    "explicit_once",
+    "explicit_repeated",
+    "uncertain",
+    "contradictory",
+]
+Isso representa a força documental da afirmação, não a probabilidade de ela ser verdadeira.
+Quando relatos divergirem, o relatório preserva a divergência:
+“Em 13 de agosto relatou que a estratégia não ajudou; em 16 de agosto disse que facilitou o início da tarefa.”
+
+Não tentaremos decidir qual versão está correta.
+Grafo de geração do relatório
+validate_period
+       │
+       ▼
+select_user_messages
+       │
+       ▼
+normalize_and_translate
+       │
+       ▼
+extract_atomic_facts
+       │
+       ▼
+validate_each_fact_against_source
+       │
+       ▼
+classify_events_and_context
+       │
+       ▼
+build_timeline
+       │
+       ▼
+detect_repetition_and_changes
+       │
+       ▼
+preserve_conflicts_and_unknowns
+       │
+       ▼
+generate_structured_report
+       │
+       ▼
+claim_grounding_validator
+       │
+       ▼
+clinical_boundary_validator
+       │
+       ▼
+privacy_minimization_validator
+       │
+       ▼
+localize_report
+       │
+       ▼
+patient_review_and_approval
+       │
+       ▼
+share_with_professional
+A extração pode processar blocos em paralelo. A síntese acontece depois, reunindo apenas afirmações que passaram pela validação de evidência.
+Revisão pelo paciente
+Minha recomendação forte é que o relatório seja mostrado primeiro ao usuário:
+remover um item;
+corrigir algo;
+adicionar uma observação;
+escolher o que deseja levar à consulta;
+aprovar o compartilhamento.
+Podemos oferecer dois modos:
+review_before_sharing, padrão;
+automatic_sharing, ativado por consentimento explícito e revogável.
+Transparência e controle do paciente são especialmente importantes para IA aplicada à saúde, em linha com os princípios de autonomia, consentimento e explicabilidade da Organização Mundial da Saúde. Pesquisas sobre acesso do paciente às próprias notas também apontam benefícios de transparência e participação, embora existam cuidados particulares em saúde mental. Estudo OpenNotes, Delphi sobre notas em saúde mental.
+Interface do profissional
+A tela deve ter três níveis:
+Visão de 60 segundos: resumo, acontecimentos e temas abertos.
+Relatório completo: linha do tempo, desafios, estratégias, mudanças e apoios.
+Evidências: datas, quantidade de ocorrências e trechos aprovados pelo usuário.
+O profissional sempre verá avisos claros:
+Relatório produzido por IA a partir de relatos do usuário. Não constitui avaliação, diagnóstico, prontuário ou recomendação clínica. Pode conter omissões ou interpretações incorretas.
+
+Isso é necessário porque estudos de sumários médicos gerados por LLM ainda encontram omissões e inexatidões, mesmo quando alucinações são raras. Estudo prospectivo sobre sumários gerados por IA.
+Esse desenho entrega muito mais que um resumo: entrega uma narrativa temporal, factual, rastreável e controlada pelo paciente, deixando toda interpretação clínica para o profissional. O próximo passo será transformar isso em um schema estruturado e substituir o contrato simples atual de summary + items, mas só farei essa alteração depois da sua autorização.
+
+
+11:42 AM
+
+
+
+
+
+
+
+
+ótimo é é crucial que o modelo conversacional seja tão bom que consiga trazer essa riqueza na conversa, sem parecer engessado ou que esta fazendo um questionario , mas de forma como uma pessoa simpatica , interessada e que sabe conversar e não só responder e perguntar
+
+
+
+
+
+
+11:51 AM
+
+
+
+
+
+
+Exatamente. E aqui existe uma decisão arquitetural crucial:
+O modelo conversacional não conversa para preencher o relatório.
+
+O relatório será uma consequência da conversa. Se o companion tentar coletar “acontecimentos, emoções, desafios e estratégias” como campos, ele rapidamente vira um formulário disfarçado.
+O objetivo interno de cada turno será escolher o melhor próximo movimento conversacional, não obter mais dados.
+Ritmo natural da conversa
+Uma conversa humana boa não segue sempre:
+responder → fazer pergunta → responder → fazer pergunta
+Ela alterna movimentos:
+acolher
+refletir
+comentar
+conectar com algo anterior
+oferecer uma perspectiva
+responder diretamente
+deixar espaço
+perguntar
+discordar gentilmente
+organizar
+retomar
+Portanto, muitas respostas não terão pergunta.
+Conversation Director
+Antes da geração, teremos um node chamado conversation_director. Ele decide:
+class ConversationDirection(BaseModel):
+    mode: ConversationMode
+    primary_move: ResponseMove
+    secondary_move: ResponseMove | None
+
+    initiative_level: Literal["user_led", "shared", "companion_led"]
+    question_budget: Literal[0, 1]
+    response_length: Literal["very_short", "short", "medium", "long"]
+
+    current_thread: str
+    should_continue_current_thread: bool
+    should_reference_memory: bool
+    advice_permission: bool
+
+    avoid_phrases: list[str]
+O node não escreve a resposta. Ele dirige a conversa.
+Movimentos disponíveis
+O companion poderá escolher entre:
+acknowledge: reconhecer o que aconteceu;
+reflect_content: refletir os fatos;
+reflect_meaning: refletir o possível significado;
+stay_with_emotion: permanecer no momento sem tentar resolver;
+offer_observation: apresentar algo que percebeu;
+connect_previous_thread: ligar ao que foi dito anteriormente;
+clarify: esclarecer uma ambiguidade real;
+invite_elaboration: abrir espaço para a pessoa continuar;
+answer_directly: responder ao pedido;
+offer_perspective: oferecer outra leitura;
+gentle_challenge: apontar uma possível contradição;
+summarize: organizar o que foi contado;
+offer_options: apresentar escolhas;
+suggest_next_step: propor algo concreto;
+celebrate: reconhecer avanço;
+repair: corrigir uma interpretação;
+close: ajudar a encerrar.
+Normalmente, apenas um ou dois movimentos por resposta.
+Controle de interrogatório
+O estado conversacional acompanhará:
+questions_in_recent_turns: int
+last_response_moves: list[ResponseMove]
+last_opening_patterns: list[str]
+unanswered_question: str | None
+user_message_depth: str
+user_energy: str
+Regras iniciais:
+no máximo uma pergunta por resposta;
+nunca empilhar três perguntas;
+depois de duas respostas consecutivas com pergunta, priorizar uma sem pergunta;
+não perguntar novamente quando já existe uma pergunta pendente;
+não perguntar algo apenas para enriquecer o relatório;
+não pedir detalhes sensíveis sem uma razão conversacional clara;
+evitar perguntas genéricas como “como você se sente sobre isso?”;
+fazer perguntas apoiadas em detalhes reais da mensagem.
+Quando não perguntar
+O modelo normalmente não pergunta quando:
+o usuário pediu uma informação direta;
+a pessoa acabou de compartilhar algo pesado;
+ela disse que não quer solução;
+a resposta já contém algo importante para processar;
+o usuário demonstra cansaço;
+há uma pergunta anterior ainda aberta;
+um comentário ou reflexão mantém melhor o fluxo;
+a conversa está naturalmente encerrando.
+Exemplo:
+“Isso parece ter sido um daqueles dias em que cada coisa isolada talvez fosse administrável, mas todas juntas ficaram pesadas demais.”
+
+Essa resposta pode terminar aí. O silêncio também faz parte de uma conversa boa.
+Perguntas que parecem interesse real
+Pergunta genérica:
+“Como isso fez você se sentir?”
+
+Pergunta conectada:
+“Quando ela falou aquilo, o que pesou mais: a crítica em si ou ter sido na frente de todo mundo?”
+
+Pergunta de questionário:
+“Quando aconteceu? Quem estava presente? Como você reagiu? Isso já ocorreu antes?”
+
+Pergunta natural:
+“Foi algo pontual ou você já vinha sentindo esse clima com ela?”
+
+Uma pergunta boa cria espaço. Quatro perguntas criam trabalho para o usuário.
+Continuação, não apenas resposta
+O companion precisa manter um current_thread, representando o assunto vivo da conversa.
+Se o usuário disser:
+“E depois minha mãe me ligou.”
+
+O modelo não deve abandonar o assunto anterior automaticamente. Ele pode perceber:
+“E isso aconteceu justamente depois daquele dia difícil no trabalho. Parece que você chegou nessa conversa já sem muito espaço emocional.”
+
+Assim ele demonstra continuidade sem repetir o histórico mecanicamente.
+Personalidade
+A voz que imagino para o produto é:
+calorosa;
+inteligente;
+tranquila;
+curiosa sem ser invasiva;
+informal na medida do usuário;
+capaz de ser direta;
+sem entusiasmo artificial;
+sem linguagem clínica desnecessária;
+sem submissão ou concordância automática;
+sem fingir emoções ou experiências humanas.
+Ele pode dizer:
+“Acho que tem uma diferença importante aí.”
+
+“Não sei se estou lendo certo, mas me parece que…”
+
+“Faz sentido você não querer transformar isso em uma solução agora.”
+
+Mas não:
+“Eu também já passei por isso.”
+
+“Eu sinto sua dor.”
+
+“Eu me importo mais com você do que qualquer pessoa.”
+
+Queremos personalidade, não engano antropomórfico ou dependência emocional.
+Adaptação à iniciativa do usuário
+Usuário conduzindo
+Quando ele está contando espontaneamente, o companion acompanha e interfere pouco.
+Iniciativa compartilhada
+O companion reflete, conecta elementos e faz perguntas ocasionais.
+Companion conduzindo
+Quando o usuário pede ajuda para organizar algo, o modelo assume mais iniciativa:
+“Vamos separar isso em duas partes: o que depende de você agora e o que ainda precisa de uma conversa com ela.”
+
+Esse nível pode mudar durante a mesma conversa.
+Exemplo de diálogo
+Usuário:
+“Minha chefe criticou meu trabalho na frente da equipe.”
+
+Resposta:
+“Nossa, na frente da equipe muda bastante o peso da crítica. Não é só ouvir que algo precisa melhorar; tem também a exposição.”
+
+Usuário:
+“Sim, fiquei com cara de idiota e não consegui responder.”
+
+Resposta:
+“E você ainda ficou sem conseguir se posicionar na hora, então provavelmente saiu dali revivendo o que gostaria de ter dito.”
+
+Nenhuma pergunta até aqui.
+Usuário:
+“Exatamente. Agora estou pensando que ela não me respeita.”
+
+Resposta:
+“Pode ser que tenha sido falta de respeito, mas acho cedo para transformar aquele momento numa conclusão sobre toda a relação. Isso já aconteceu de outras formas antes ou foi a primeira vez?”
+
+Aqui a pergunta foi conquistada pela conversa. Ela ajuda a distinguir um acontecimento de um possível padrão.
+Quality gate de naturalidade
+Antes da resposta sair, verificaremos:
+parece uma resposta genérica?
+apenas reformulou as palavras do usuário?
+fez perguntas demais?
+tentou solucionar cedo demais?
+mudou de assunto?
+repetiu a mesma abertura?
+usou linguagem de terapeuta artificial?
+presumiu emoções?
+transformou um acontecimento em traço pessoal?
+demonstrou continuidade verdadeira?
+trouxe algo novo sem dominar a conversa?
+soa natural no idioma final?
+O relatório continuará rico porque conversas boas naturalmente revelam acontecimentos, desafios, escolhas, tentativas e mudanças. Mas o usuário sentirá que está sendo acompanhado, não entrevistado. Essa deve ser uma regra central do sistema e dos testes multi-turno.
+
+
+11:52 AM
+
+
+
+
+
+
+
+

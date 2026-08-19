@@ -721,7 +721,31 @@ O profissional não acessa o histórico do chatbot. O Go seleciona internamente 
 }
 ```
 
-Regras: período posterior à ativação do vínculo, no máximo 31 dias, até 500 mensagens e consentimento vigente para `summaries`. Retorna `201` com `status: "completed"` e `context`; se a FastAPI estiver indisponível, retorna `202` com `status: "failed"` e preserva o job para auditoria.
+Regras: período posterior à ativação do vínculo, no máximo 31 dias e consentimento vigente para `summaries`. A rota não espera a IA: retorna sempre `202` depois de enfileirar o trabalho.
+
+```json
+{
+  "job_id": "uuid",
+  "status": "queued"
+}
+```
+
+Consulte `GET /v1/professional/context-jobs/{jobID}` até atingir um estado terminal:
+
+```json
+{
+  "id": "uuid",
+  "connection_id": "uuid",
+  "period_start": "2026-08-11T00:00:00Z",
+  "period_end": "2026-08-18T00:00:00Z",
+  "status": "processing",
+  "attempt_count": 1,
+  "created_at": "2026-08-19T12:00:00Z",
+  "updated_at": "2026-08-19T12:00:01Z"
+}
+```
+
+Estados: `queued`, `processing`, `completed` ou `failed`. Ao receber `completed`, consulte a listagem de contextos. Em `failed`, mostre uma mensagem genérica; códigos internos e conteúdo sensível não são expostos.
 
 `GET /v1/professional/patients/{connectionID}/contexts` retorna:
 
@@ -753,7 +777,7 @@ Regras: período posterior à ativação do vínculo, no máximo 31 dias, até 5
 
 Itens `event` e `marked_topic` só aparecem enquanto seus respectivos consentimentos estiverem vigentes. IDs das mensagens-fonte são guardados para rastreabilidade interna, mas nunca enviados ao profissional.
 
-Erros específicos: `403 context_consent_required`, `409 context_processing`, `422 context_no_messages` e `422 context_period_too_large`.
+Erros imediatos específicos: `403 context_consent_required` e `409 context_processing`. Período sem mensagens, limite de 500 mensagens, indisponibilidade da IA e respostas inválidas são tratados pelo worker e aparecem como job `failed` após a política de tentativas.
 
 ## Fora do MVP funcional atual
 

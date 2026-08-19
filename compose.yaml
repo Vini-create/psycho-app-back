@@ -19,5 +19,73 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/migrate/Dockerfile
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: >-
+        host=postgres port=5432 user=${POSTGRES_USER}
+        password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB} sslmode=disable
+    command: ["-dir", "/migrations", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ai:
+    build:
+      context: ./services/ai
+    environment:
+      AI_ENVIRONMENT: development
+      AI_SERVICE_API_KEY: ${COMPANION_API_KEY}
+      AI_PROVIDER: mock
+      AI_MODEL: mock-v1
+      AI_PROMPT_VERSION: companion-v1
+      AI_CONTEXT_PROMPT_VERSION: context-v1
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      HTTP_ADDRESS: :8080
+      DATABASE_URL: >-
+        postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      COMPANION_ENABLED: "true"
+      COMPANION_BASE_URL: http://ai:8000
+      AI_CONTEXT_WORKER_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ai:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
 volumes:
   postgres_data:

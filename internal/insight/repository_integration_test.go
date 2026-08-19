@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Vini-create/psycho-app-back/internal/companion"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -101,17 +102,21 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateJob() error = %v", err)
 	}
-	confidence := 0.9
-	_, err = repository.CompleteJob(
-		ctx, jobID, connectionID, periodStart, periodEnd, []byte("encrypted-summary"),
-		"integration", "integration-model", "context-v1",
-		[]itemWrite{{
-			Kind: "theme", DescriptionCiphertext: []byte("encrypted-item"),
-			Confidence: &confidence, SourceMessageIDs: []string{messageID},
-		}}, now,
-	)
+	service, err := NewService(repository, passthroughCipher{}, integrationCompanion{}, ServiceConfig{
+		ConsentPolicyVersion: "integration-v1",
+		WorkerLease:          time.Minute,
+		MaxAttempts:          3,
+	})
 	if err != nil {
-		t.Fatalf("CompleteJob() error = %v", err)
+		t.Fatalf("NewService() error = %v", err)
+	}
+	processed, err := service.ProcessNext(ctx)
+	if err != nil || !processed {
+		t.Fatalf("ProcessNext() processed = %v, error = %v", processed, err)
+	}
+	storedJob, err := repository.GetJob(ctx, professionalID, jobID)
+	if err != nil || storedJob.Status != "completed" || storedJob.AttemptCount != 1 {
+		t.Fatalf("GetJob() = %#v, error = %v", storedJob, err)
 	}
 	summaries, err := repository.ListSummaries(ctx, connectionID, 10)
 	if err != nil || len(summaries) != 1 {
@@ -121,4 +126,33 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].Kind != "theme" {
 		t.Fatalf("ListItems() = %#v, error = %v", items, err)
 	}
+}
+
+type passthroughCipher struct{}
+
+func (passthroughCipher) Encrypt(value []byte) ([]byte, error) { return value, nil }
+func (passthroughCipher) Decrypt(value []byte) ([]byte, error) { return value, nil }
+
+type integrationCompanion struct{}
+
+func (integrationCompanion) Respond(
+	context.Context,
+	companion.Request,
+) (companion.Response, error) {
+	return companion.Response{}, nil
+}
+
+func (integrationCompanion) ProcessContext(
+	_ context.Context,
+	request companion.ContextRequest,
+) (companion.ContextResponse, error) {
+	confidence := 0.9
+	return companion.ContextResponse{
+		Summary: "integration summary",
+		Items: []companion.ContextItem{{
+			Kind: "theme", Description: "integration theme", Confidence: &confidence,
+			SourceMessageIDs: []string{request.Messages[0].ID},
+		}},
+		Provider: "integration", Model: "integration-model", PromptVersion: "context-v1",
+	}, nil
 }

@@ -85,9 +85,9 @@ type ContextResponse struct {
 }
 
 type HTTPClient struct {
-	endpoint string
-	apiKey   string
-	client   *http.Client
+	baseURL string
+	apiKey  string
+	client  *http.Client
 }
 
 func NewHTTPClient(baseURL, apiKey string, timeout time.Duration) (*HTTPClient, error) {
@@ -107,11 +107,17 @@ func NewHTTPClient(baseURL, apiKey string, timeout time.Duration) (*HTTPClient, 
 		return nil, fmt.Errorf("companion timeout must be greater than zero")
 	}
 
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 32
+	transport.IdleConnTimeout = 90 * time.Second
+
 	return &HTTPClient{
-		endpoint: baseURL + "/v1/companion/respond",
-		apiKey:   apiKey,
+		baseURL: baseURL,
+		apiKey:  apiKey,
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -128,7 +134,7 @@ func (c *HTTPClient) Respond(ctx context.Context, input Request) (Response, erro
 	request, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		c.endpoint,
+		c.baseURL+"/v1/companion/respond",
 		bytes.NewReader(body),
 	)
 	if err != nil {
@@ -176,7 +182,7 @@ func (c *HTTPClient) ProcessContext(
 	if err != nil {
 		return ContextResponse{}, fmt.Errorf("encode context request: %w", err)
 	}
-	endpoint := strings.TrimSuffix(c.endpoint, "/v1/companion/respond") + "/v1/context/process"
+	endpoint := c.baseURL + "/v1/context/process"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return ContextResponse{}, fmt.Errorf("create context request: %w", err)

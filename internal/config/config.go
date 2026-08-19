@@ -47,11 +47,16 @@ type AppConfig struct {
 }
 
 type CompanionConfig struct {
-	Enabled         bool
-	BaseURL         string
-	APIKey          string
-	Timeout         time.Duration
-	HistoryMessages int
+	Enabled                  bool
+	BaseURL                  string
+	APIKey                   string
+	Timeout                  time.Duration
+	HistoryMessages          int
+	ContextWorkerEnabled     bool
+	ContextWorkerConcurrency int
+	ContextWorkerPoll        time.Duration
+	ContextWorkerLease       time.Duration
+	ContextWorkerMaxAttempts int
 }
 
 type HTTPConfig struct {
@@ -182,11 +187,37 @@ func loadCompanionConfig(environment string) (CompanionConfig, error) {
 	if err != nil {
 		return CompanionConfig{}, err
 	}
+	workerEnabled, err := boolFromEnv("AI_CONTEXT_WORKER_ENABLED")
+	if err != nil {
+		return CompanionConfig{}, err
+	}
+	workerConcurrency, err := intFromEnv("AI_CONTEXT_WORKER_CONCURRENCY", 1, 32)
+	if err != nil {
+		return CompanionConfig{}, err
+	}
+	workerPoll, err := durationFromEnv("AI_CONTEXT_WORKER_POLL_INTERVAL")
+	if err != nil {
+		return CompanionConfig{}, err
+	}
+	workerLease, err := durationFromEnv("AI_CONTEXT_WORKER_LEASE")
+	if err != nil {
+		return CompanionConfig{}, err
+	}
+	workerMaxAttempts, err := intFromEnv("AI_CONTEXT_WORKER_MAX_ATTEMPTS", 1, 10)
+	if err != nil {
+		return CompanionConfig{}, err
+	}
 
 	config := CompanionConfig{
 		Enabled: enabled, Timeout: timeout, HistoryMessages: historyMessages,
+		ContextWorkerEnabled: workerEnabled, ContextWorkerConcurrency: workerConcurrency,
+		ContextWorkerPoll: workerPoll, ContextWorkerLease: workerLease,
+		ContextWorkerMaxAttempts: workerMaxAttempts,
 	}
 	if !enabled {
+		if workerEnabled {
+			return CompanionConfig{}, fmt.Errorf("AI_CONTEXT_WORKER_ENABLED requires COMPANION_ENABLED")
+		}
 		return config, nil
 	}
 

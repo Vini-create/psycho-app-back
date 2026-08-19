@@ -1,7 +1,7 @@
 # Contrato Go API → FastAPI Companion
 
 Atualizado em: 2026-08-18
-Status: o cliente HTTP no backend Go está implementado; o serviço FastAPI ainda será criado.
+Status: cliente Go e scaffold FastAPI estão implementados. O provider `mock` valida a integração sem custo; o adapter de um modelo real ainda será criado.
 
 ## Transporte e autenticação
 
@@ -117,6 +117,8 @@ O FastAPI não grava conversas como fonte da verdade. O PostgreSQL controlado pe
 
 ## Processamento de contexto periódico
 
+Este fluxo é assíncrono do ponto de vista da API pública. O Go grava um job durável, responde `202` ao frontend e workers Go concorrentes chamam este endpoint. O FastAPI não gerencia a fila nem acessa o PostgreSQL.
+
 O mesmo serviço também expõe:
 
 ```http
@@ -184,3 +186,5 @@ Regras da resposta:
 O resumo deve ser descritivo e fiel às fontes, sem diagnóstico automático. Os itens devem separar observações da conversa de inferências. A política de crise/safety e a versão do prompt precisam ser testáveis. Qualquer erro, timeout ou resposta inválida faz o Go marcar o job como `failed`; nenhum detalhe interno é exposto ao profissional.
 
 O Go persiste os IDs-fonte somente para auditoria e rastreabilidade. Nem os IDs nem as mensagens originais aparecem nas respostas destinadas ao profissional.
+
+Workers usam lease e `FOR UPDATE SKIP LOCKED`, portanto múltiplas instâncias do backend podem consumir a fila com segurança. Falhas transitórias usam backoff e no máximo `AI_CONTEXT_WORKER_MAX_ATTEMPTS` tentativas. O FastAPI deve continuar idempotente por `request_id`, pois um worker pode morrer depois da inferência e antes de confirmar o resultado no banco.

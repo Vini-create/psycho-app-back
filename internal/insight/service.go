@@ -2,6 +2,7 @@ package insight
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -22,6 +23,8 @@ type Cipher interface {
 
 type ServiceConfig struct {
 	ConsentPolicyVersion string
+	WorkerLease          time.Duration
+	MaxAttempts          int
 }
 
 type Service struct {
@@ -43,6 +46,15 @@ func NewService(
 	}
 	if strings.TrimSpace(config.ConsentPolicyVersion) == "" {
 		return nil, fmt.Errorf("consent policy version is required")
+	}
+	if config.WorkerLease == 0 {
+		config.WorkerLease = 2 * time.Minute
+	}
+	if config.MaxAttempts == 0 {
+		config.MaxAttempts = 3
+	}
+	if config.WorkerLease < 10*time.Second || config.MaxAttempts < 1 || config.MaxAttempts > 10 {
+		return nil, fmt.Errorf("valid insight worker configuration is required")
 	}
 	return &Service{
 		repository: repository, cipher: cipher, companion: companionClient,
@@ -87,21 +99,63 @@ func (s *Service) Generate(
 	if err != nil {
 		return GenerationResult{}, err
 	}
+	return GenerationResult{JobID: jobID, Status: "queued"}, nil
+}
 
-	storedMessages, err := s.repository.LoadSourceMessages(
-		ctx, access.AppUserID, periodStart, periodEnd, maxSourceMessages+1,
+func (s *Service) GetJob(
+	ctx context.Context,
+	professionalUserID string,
+	jobID string,
+) (Job, error) {
+	if _, err := uuid.Parse(jobID); err != nil {
+		return Job{}, ErrInvalidInput
+	}
+	stored, err := s.repository.GetJob(ctx, professionalUserID, jobID)
+	if err != nil {
+		return Job{}, err
+	}
+	return jobFromStored(stored), nil
+}
+
+func (s *Service) ProcessNext(ctx context.Context) (bool, error) {
+	now := s.now().UTC()
+	job, claimed, err := s.repository.ClaimNextJob(
+		ctx, now, now.Add(-s.config.WorkerLease),
+	)
+	if err != nil || !claimed {
+		return claimed, err
+	}
+	return true, s.processJob(ctx, job)
+}
+
+func (s *Service) processJob(ctx context.Context, job storedJob) error {
+	access, err := s.repository.ProfessionalConnectionAccess(
+		ctx, job.ProfessionalUserID, job.ConnectionID, s.config.ConsentPolicyVersion,
 	)
 	if err != nil {
-		_ = s.failJob(ctx, jobID, "source_query_failed")
-		return GenerationResult{}, err
+		if !errors.Is(err, ErrNotFound) {
+			return s.retryOrFail(ctx, job, "access_query_failed")
+		}
+		return s.failJob(ctx, job.ID, "access_revoked")
+	}
+	if !slices.Contains(access.Scopes, "summaries") || job.PeriodStart.Before(access.ActivatedAt) {
+		if failErr := s.failJob(ctx, job.ID, "access_revoked"); failErr != nil {
+			return failErr
+		}
+		return nil
+	}
+
+	storedMessages, err := s.repository.LoadSourceMessages(
+		ctx, access.AppUserID, job.PeriodStart, job.PeriodEnd, maxSourceMessages+1,
+	)
+	if err != nil {
+		return s.retryOrFail(ctx, job, "source_query_failed")
 	}
 	if len(storedMessages) == 0 {
-		_ = s.failJob(ctx, jobID, "no_messages")
-		return GenerationResult{}, ErrNoMessages
+		return s.failJob(ctx, job.ID, "no_messages")
 	}
 	if len(storedMessages) > maxSourceMessages {
-		_ = s.failJob(ctx, jobID, "period_too_large")
-		return GenerationResult{}, ErrPeriodTooLarge
+		return s.failJob(ctx, job.ID, "period_too_large")
 	}
 
 	messages := make([]companion.ContextMessage, 0, len(storedMessages))
@@ -109,8 +163,7 @@ func (s *Service) Generate(
 	for _, stored := range storedMessages {
 		plaintext, err := s.cipher.Decrypt(stored.ContentCiphertext)
 		if err != nil {
-			_ = s.failJob(ctx, jobID, "decryption_failed")
-			return GenerationResult{}, fmt.Errorf("decrypt context source: %w", err)
+			return s.failJob(ctx, job.ID, "decryption_failed")
 		}
 		messages = append(messages, companion.ContextMessage{
 			ID: stored.ID, Role: stored.Role, Content: string(plaintext),
@@ -120,15 +173,12 @@ func (s *Service) Generate(
 	}
 
 	response, err := s.companion.ProcessContext(ctx, companion.ContextRequest{
-		RequestID: jobID, ConnectionID: connectionID, UserID: access.AppUserID,
-		PeriodStart: periodStart, PeriodEnd: periodEnd, Messages: messages,
+		RequestID: job.ID, ConnectionID: job.ConnectionID, UserID: access.AppUserID,
+		PeriodStart: job.PeriodStart, PeriodEnd: job.PeriodEnd, Messages: messages,
 	})
 	if err != nil {
-		slog.Warn("context processing failed", "job_id", jobID, "error", err)
-		if failErr := s.failJob(ctx, jobID, "companion_unavailable"); failErr != nil {
-			return GenerationResult{}, failErr
-		}
-		return GenerationResult{JobID: jobID, Status: "failed"}, nil
+		slog.Warn("context processing failed", "job_id", job.ID, "error", err)
+		return s.retryOrFail(ctx, job, "companion_unavailable")
 	}
 
 	summaryText := strings.TrimSpace(response.Summary)
@@ -140,35 +190,30 @@ func (s *Service) Generate(
 		utf8.RuneCountInString(model) < 1 || utf8.RuneCountInString(model) > 160 ||
 		utf8.RuneCountInString(promptVersion) < 1 || utf8.RuneCountInString(promptVersion) > 100 ||
 		len(response.Items) > 100 {
-		_ = s.failJob(ctx, jobID, "invalid_companion_response")
-		return GenerationResult{JobID: jobID, Status: "failed"}, nil
+		return s.failJob(ctx, job.ID, "invalid_companion_response")
 	}
 
 	summaryCiphertext, err := s.cipher.Encrypt([]byte(summaryText))
 	if err != nil {
-		_ = s.failJob(ctx, jobID, "encryption_failed")
-		return GenerationResult{}, err
+		return s.failJob(ctx, job.ID, "encryption_failed")
 	}
 	items := make([]itemWrite, 0, len(response.Items))
 	for _, input := range response.Items {
 		if !validItemKind(input.Kind) || strings.TrimSpace(input.Description) == "" ||
 			utf8.RuneCountInString(input.Description) > 4000 || len(input.SourceMessageIDs) == 0 ||
 			(input.Confidence != nil && (*input.Confidence < 0 || *input.Confidence > 1)) {
-			_ = s.failJob(ctx, jobID, "invalid_companion_response")
-			return GenerationResult{JobID: jobID, Status: "failed"}, nil
+			return s.failJob(ctx, job.ID, "invalid_companion_response")
 		}
 		for _, sourceID := range input.SourceMessageIDs {
 			if _, allowed := allowedSources[sourceID]; !allowed {
-				_ = s.failJob(ctx, jobID, "invalid_source_reference")
-				return GenerationResult{JobID: jobID, Status: "failed"}, nil
+				return s.failJob(ctx, job.ID, "invalid_source_reference")
 			}
 		}
 		descriptionCiphertext, err := s.cipher.Encrypt(
 			[]byte(strings.TrimSpace(input.Description)),
 		)
 		if err != nil {
-			_ = s.failJob(ctx, jobID, "encryption_failed")
-			return GenerationResult{}, err
+			return s.failJob(ctx, job.ID, "encryption_failed")
 		}
 		items = append(items, itemWrite{
 			Kind: input.Kind, DescriptionCiphertext: descriptionCiphertext,
@@ -180,19 +225,14 @@ func (s *Service) Generate(
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer cancel()
 	_, err = s.repository.CompleteJob(
-		persistCtx, jobID, connectionID, periodStart, periodEnd,
+		persistCtx, job.ID, job.ConnectionID, job.PeriodStart, job.PeriodEnd,
 		summaryCiphertext, provider, model, promptVersion,
 		items, s.now().UTC(),
 	)
 	if err != nil {
-		return GenerationResult{}, err
+		return err
 	}
-
-	summaries, err := s.List(persistCtx, professionalUserID, connectionID)
-	if err != nil || len(summaries) == 0 {
-		return GenerationResult{}, err
-	}
-	return GenerationResult{JobID: jobID, Status: "completed", Summary: &summaries[0]}, nil
+	return nil
 }
 
 func (s *Service) List(
@@ -255,6 +295,28 @@ func (s *Service) failJob(ctx context.Context, jobID, failureCode string) error 
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return s.repository.FailJob(persistCtx, jobID, failureCode, s.now().UTC())
+}
+
+func (s *Service) retryOrFail(ctx context.Context, job storedJob, failureCode string) error {
+	if job.AttemptCount >= s.config.MaxAttempts {
+		return s.failJob(ctx, job.ID, failureCode)
+	}
+	delay := time.Duration(job.AttemptCount*job.AttemptCount) * 5 * time.Second
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.repository.RetryJob(
+		persistCtx, job.ID, failureCode, s.now().UTC().Add(delay), s.now().UTC(),
+	)
+}
+
+func jobFromStored(stored storedJob) Job {
+	return Job{
+		ID: stored.ID, ConnectionID: stored.ConnectionID,
+		PeriodStart: stored.PeriodStart, PeriodEnd: stored.PeriodEnd,
+		Status: stored.Status, AttemptCount: stored.AttemptCount,
+		CompletedAt: stored.CompletedAt, CreatedAt: stored.CreatedAt,
+		UpdatedAt: stored.UpdatedAt,
+	}
 }
 
 func validItemKind(kind string) bool {

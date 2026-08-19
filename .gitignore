@@ -10,6 +10,13 @@
 *.out
 coverage.*
 
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
 # Local runtime data
 *.log
 *.pid

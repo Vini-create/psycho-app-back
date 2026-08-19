@@ -40,3 +40,15 @@ type GenerationResult struct {
 	Status  string   `json:"status"`
 	Summary *Summary `json:"context,omitempty"`
 }
+
+type Job struct {
+	ID           string     `json:"id"`
+	ConnectionID string     `json:"connection_id"`
+	PeriodStart  time.Time  `json:"period_start"`
+	PeriodEnd    time.Time  `json:"period_end"`
+	Status       string     `json:"status"`
+	AttemptCount int        `json:"attempt_count"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
