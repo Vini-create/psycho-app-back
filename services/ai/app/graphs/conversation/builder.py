@@ -89,11 +89,10 @@ class ConversationGraphRunner:
             Literal["normal", "boundary", "crisis", "security_block"],
             state.get("route", "normal"),
         )
-        model = self._settings.conversation_model if self._provider.name == "openai" else "mock-v1"
         return CompanionResponse(
             content=state["final_content"],
             provider=self._provider.name,
-            model=model,
+            model=state["model_used"],
             prompt_version=self._settings.prompt_version,
             blocked=route != "normal",
             block_reason=state.get("block_reason"),
@@ -115,13 +114,18 @@ class ConversationGraphRunner:
         local = scan_input(request.message)
         moderation = await self._provider.moderate(request.message)
         gateway = local
+        model_used: str | None = None
         if local.decision == "review":
             gateway = await self._provider.classify_security(request.message, "unknown")
-        return {
+            model_used = self._model_name("auxiliary")
+        result: ConversationState = {
             "gateway": gateway,
             "moderation": moderation,
             "requires_safety_review": moderation.flagged or needs_safety_review(request.message),
         }
+        if model_used is not None:
+            result["model_used"] = model_used
+        return result
 
     async def _route_input(self, state: ConversationState) -> ConversationState:
         gateway = state["gateway"]
@@ -138,7 +142,12 @@ class ConversationGraphRunner:
 
     async def _classify_safety(self, state: ConversationState) -> ConversationState:
         decision = await self._provider.classify_safety(state["request"].message, state["language"])
-        return {"safety": decision, "route": decision.route, "block_reason": decision.reason_code}
+        return {
+            "safety": decision,
+            "route": decision.route,
+            "block_reason": decision.reason_code,
+            "model_used": self._model_name("auxiliary"),
+        }
 
     async def _after_safety(self, state: ConversationState) -> Literal["safe", "special"]:
         return "safe" if state["route"] == "normal" else "special"
@@ -184,7 +193,11 @@ class ConversationGraphRunner:
             country_code=request.country_code,
         )
         generated = await self._provider.generate_conversation(generation_input)
-        return {"generation_input": generation_input, "generated": generated}
+        return {
+            "generation_input": generation_input,
+            "generated": generated,
+            "model_used": self._model_name("conversation"),
+        }
 
     async def _validate(self, state: ConversationState) -> ConversationState:
         generated = state["generated"]
@@ -215,6 +228,13 @@ class ConversationGraphRunner:
         if "final_content" in state:
             return {}
         return {"final_content": state["generated"].content.strip(), "route": "normal"}
+
+    def _model_name(self, purpose: Literal["conversation", "auxiliary"]) -> str:
+        if self._provider.name != "openai":
+            return "mock-v1"
+        if purpose == "auxiliary":
+            return self._settings.auxiliary_model
+        return self._settings.conversation_model
 
 
 def validate_conversation_output(content: str, question_budget: int) -> list[str]:

@@ -18,6 +18,7 @@ class ConversationState(TypedDict, total=False):
     requires_safety_review: bool
     safety: SafetyDecision
     route: str
+    model_used: str
     block_reason: str | None
     generation_input: ConversationGenerationInput
     generated: ConversationModelOutput
