@@ -11,9 +11,17 @@ from app.services.factory import get_ai_service
 bearer = HTTPBearer(auto_error=False)
 
 
-def require_service_auth(
+async def provide_settings() -> Settings:
+    return get_settings()
+
+
+async def provide_ai_service() -> AIService:
+    return get_ai_service()
+
+
+async def require_service_auth(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer)],
-    settings: Annotated[Settings, Depends(get_settings)],
+    settings: Annotated[Settings, Depends(provide_settings)],
 ) -> None:
     valid = (
         credentials is not None
@@ -29,4 +37,4 @@ def require_service_auth(
 
 
 ServiceAuth = Annotated[None, Depends(require_service_auth)]
-AIServiceDependency = Annotated[AIService, Depends(get_ai_service)]
+AIServiceDependency = Annotated[AIService, Depends(provide_ai_service)]

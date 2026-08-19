@@ -28,7 +28,7 @@ func TestHTTPClientRespond(t *testing.T) {
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body: io.NopCloser(strings.NewReader(
-				`{"content":"Resposta acolhedora","provider":"test","model":"test-model","prompt_version":"v1","blocked":false}`,
+				`{"content":"Resposta acolhedora","provider":"test","model":"test-model","prompt_version":"v1","blocked":false,"language":"pt-BR","route":"normal","graph_version":"conversation-graph-v1"}`,
 			)),
 			Request: r,
 		}, nil
@@ -79,7 +79,7 @@ func TestHTTPClientProcessContext(t *testing.T) {
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body: io.NopCloser(strings.NewReader(
-				`{"summary":"Resumo do período","items":[{"kind":"theme","description":"Tema recorrente","source_message_ids":["message-1"]}],"provider":"test","model":"test-model","prompt_version":"context-v1"}`,
+				`{"schema_version":"journey-report-v1","title":"Relatório","coverage":{"conversation_count":1,"user_message_count":1,"active_day_count":1,"completeness":"limited","note":"Cobertura limitada"},"summary":"Resumo do período","timeline":[],"items":[{"kind":"open_topic","title":"Tema","description":"Tema recorrente","evidence_strength":"explicit_once","source_message_ids":["message-1"],"limitations":[]}],"limitations":[],"provider":"test","model":"test-model","prompt_version":"journey-report-v1","graph_version":"journey-report-graph-v1"}`,
 			)),
 			Request: r,
 		}, nil

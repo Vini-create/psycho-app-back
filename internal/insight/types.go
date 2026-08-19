@@ -15,24 +15,50 @@ var (
 )
 
 type Item struct {
+	ID               string     `json:"id"`
+	Kind             string     `json:"kind"`
+	Title            string     `json:"title"`
+	Description      string     `json:"description"`
+	Impact           string     `json:"impact,omitempty"`
+	EvidenceStrength string     `json:"evidence_strength"`
+	OccurredAt       *time.Time `json:"occurred_at,omitempty"`
+	Limitations      []string   `json:"limitations"`
+	Included         bool       `json:"included"`
+}
+
+type Coverage struct {
+	ConversationCount int    `json:"conversation_count"`
+	UserMessageCount  int    `json:"user_message_count"`
+	ActiveDayCount    int    `json:"active_day_count"`
+	Completeness      string `json:"completeness"`
+	Note              string `json:"note"`
+}
+
+type TimelineEntry struct {
 	ID          string     `json:"id"`
-	Kind        string     `json:"kind"`
 	Description string     `json:"description"`
-	Confidence  *float64   `json:"confidence,omitempty"`
 	OccurredAt  *time.Time `json:"occurred_at,omitempty"`
 }
 
 type Summary struct {
-	ID            string    `json:"id"`
-	ConnectionID  string    `json:"connection_id"`
-	PeriodStart   time.Time `json:"period_start"`
-	PeriodEnd     time.Time `json:"period_end"`
-	Summary       string    `json:"summary"`
-	Items         []Item    `json:"items"`
-	Provider      string    `json:"provider"`
-	Model         string    `json:"model"`
-	PromptVersion string    `json:"prompt_version"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            string          `json:"id"`
+	ConnectionID  string          `json:"connection_id"`
+	SchemaVersion string          `json:"schema_version"`
+	Title         string          `json:"title"`
+	PeriodStart   time.Time       `json:"period_start"`
+	PeriodEnd     time.Time       `json:"period_end"`
+	Coverage      Coverage        `json:"coverage"`
+	Summary       string          `json:"summary"`
+	Timeline      []TimelineEntry `json:"timeline"`
+	Items         []Item          `json:"items"`
+	Limitations   []string        `json:"limitations"`
+	Provider      string          `json:"provider"`
+	Model         string          `json:"model"`
+	PromptVersion string          `json:"prompt_version"`
+	GraphVersion  string          `json:"graph_version"`
+	ReviewStatus  string          `json:"review_status"`
+	ReviewedAt    *time.Time      `json:"reviewed_at,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 type GenerationResult struct {

@@ -75,6 +75,8 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_timeline_sources WHERE chat_message_id = $1`, messageID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_timeline_entries WHERE context_summary_id IN (SELECT id FROM context_summaries WHERE connection_id = $1)`, connectionID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_item_sources WHERE chat_message_id = $1`, messageID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_items WHERE context_summary_id IN (SELECT id FROM context_summaries WHERE connection_id = $1)`, connectionID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_summaries WHERE connection_id = $1`, connectionID)
@@ -118,13 +120,30 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	if err != nil || storedJob.Status != "completed" || storedJob.AttemptCount != 1 {
 		t.Fatalf("GetJob() = %#v, error = %v", storedJob, err)
 	}
+	pending, err := repository.ListSummariesForApp(ctx, appUserID, 10)
+	if err != nil || len(pending) != 1 || pending[0].ReviewStatus != "pending_review" {
+		t.Fatalf("ListSummariesForApp() = %#v, error = %v", pending, err)
+	}
+	timeline, err := repository.ListTimeline(ctx, pending[0].ID)
+	if err != nil || len(timeline) != 1 {
+		t.Fatalf("ListTimeline() = %#v, error = %v", timeline, err)
+	}
+	if err := repository.ReviewSummary(
+		ctx, appUserID, pending[0].ID, "approved", nil, []string{timeline[0].ID}, now,
+	); err != nil {
+		t.Fatalf("ReviewSummary() error = %v", err)
+	}
 	summaries, err := repository.ListSummaries(ctx, connectionID, 10)
 	if err != nil || len(summaries) != 1 {
 		t.Fatalf("ListSummaries() = %#v, error = %v", summaries, err)
 	}
 	items, err := repository.ListItems(ctx, summaries[0].ID)
-	if err != nil || len(items) != 1 || items[0].Kind != "theme" {
+	if err != nil || len(items) != 1 || items[0].Kind != "open_topic" {
 		t.Fatalf("ListItems() = %#v, error = %v", items, err)
+	}
+	timeline, err = repository.ListTimeline(ctx, summaries[0].ID)
+	if err != nil || len(timeline) != 0 {
+		t.Fatalf("excluded ListTimeline() = %#v, error = %v", timeline, err)
 	}
 }
 
@@ -146,13 +165,27 @@ func (integrationCompanion) ProcessContext(
 	_ context.Context,
 	request companion.ContextRequest,
 ) (companion.ContextResponse, error) {
-	confidence := 0.9
 	return companion.ContextResponse{
+		SchemaVersion: "journey-report-v1",
+		Title:         "Integration report",
+		Coverage: companion.ReportCoverage{
+			ConversationCount: 1, UserMessageCount: 1, ActiveDayCount: 1,
+			Completeness: "limited", Note: "Integration coverage",
+		},
 		Summary: "integration summary",
+		Timeline: []companion.TimelineEntry{{
+			Description: "integration timeline",
+			OccurredAt:  &request.Messages[0].CreatedAt,
+			SourceMessageIDs: []string{
+				request.Messages[0].ID,
+			},
+		}},
 		Items: []companion.ContextItem{{
-			Kind: "theme", Description: "integration theme", Confidence: &confidence,
+			Kind: "open_topic", Title: "Integration topic",
+			Description: "integration theme", EvidenceStrength: "explicit_once",
 			SourceMessageIDs: []string{request.Messages[0].ID},
 		}},
-		Provider: "integration", Model: "integration-model", PromptVersion: "context-v1",
+		Provider: "integration", Model: "integration-model",
+		PromptVersion: "journey-report-v1", GraphVersion: "journey-report-graph-v1",
 	}, nil
 }

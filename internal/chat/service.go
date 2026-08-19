@@ -305,10 +305,19 @@ func (s *Service) generateReply(
 	}
 
 	response.Content = strings.TrimSpace(response.Content)
+	response.Provider = strings.TrimSpace(response.Provider)
+	response.Model = strings.TrimSpace(response.Model)
+	response.PromptVersion = strings.TrimSpace(response.PromptVersion)
+	response.Language = strings.TrimSpace(response.Language)
+	response.GraphVersion = strings.TrimSpace(response.GraphVersion)
 	if utf8.RuneCountInString(response.Content) < 1 ||
 		utf8.RuneCountInString(response.Content) > maxAssistantMessageRunes ||
-		len(response.Provider) > 100 || len(response.Model) > 160 ||
-		len(response.PromptVersion) > 100 {
+		utf8.RuneCountInString(response.Provider) < 1 || len(response.Provider) > 100 ||
+		utf8.RuneCountInString(response.Model) < 1 || len(response.Model) > 160 ||
+		utf8.RuneCountInString(response.PromptVersion) < 1 || len(response.PromptVersion) > 100 ||
+		utf8.RuneCountInString(response.Language) < 2 || len(response.Language) > 35 ||
+		utf8.RuneCountInString(response.GraphVersion) < 1 || len(response.GraphVersion) > 100 ||
+		!validCompanionRoute(response.Route) || (response.Route == "normal") == response.Blocked {
 		if markErr := s.markGenerationFailed(
 			ctx, appUserID, userMessage.ID, "invalid_companion_response",
 		); markErr != nil {
@@ -337,9 +346,9 @@ func (s *Service) generateReply(
 		userMessage.ID,
 		ciphertext,
 		status,
-		strings.TrimSpace(response.Provider),
-		strings.TrimSpace(response.Model),
-		strings.TrimSpace(response.PromptVersion),
+		response.Provider,
+		response.Model,
+		response.PromptVersion,
 		s.now().UTC(),
 	)
 	if err != nil {
@@ -455,13 +464,19 @@ func boundedCompanionHistory(messages []Message) []companion.Message {
 		}
 		totalRunes += messageRunes
 		history = append(history, companion.Message{
-			Role: messages[index].Role, Content: messages[index].Content,
+			ID: messages[index].ID, Role: messages[index].Role,
+			Content: messages[index].Content, CreatedAt: &messages[index].CreatedAt,
 		})
 	}
 	for left, right := 0, len(history)-1; left < right; left, right = left+1, right-1 {
 		history[left], history[right] = history[right], history[left]
 	}
 	return history
+}
+
+func validCompanionRoute(route string) bool {
+	return route == "normal" || route == "boundary" || route == "crisis" ||
+		route == "security_block"
 }
 
 func validateMessageInput(conversationID, content, idempotencyKey string) error {

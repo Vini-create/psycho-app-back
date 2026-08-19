@@ -19,6 +19,9 @@ func NewInsightHandler(service *insight.Service) *InsightHandler {
 }
 
 func (h *InsightHandler) RegisterRoutes(mux *http.ServeMux, authHandler *AuthHandler) {
+	requireApp := func(handler http.HandlerFunc) http.HandlerFunc {
+		return authHandler.requireAuth(auth.AudienceApp, handler)
+	}
 	requireProfessional := func(handler http.HandlerFunc) http.HandlerFunc {
 		return authHandler.requireAuth(auth.AudienceProfessional, requireMFA(handler))
 	}
@@ -34,6 +37,11 @@ func (h *InsightHandler) RegisterRoutes(mux *http.ServeMux, authHandler *AuthHan
 	mux.HandleFunc(
 		"GET /v1/professional/context-jobs/{jobID}",
 		requireProfessional(h.getJob),
+	)
+	mux.HandleFunc("GET /v1/app/context-reports", requireApp(h.listForApp))
+	mux.HandleFunc(
+		"POST /v1/app/context-reports/{reportID}/review",
+		requireApp(h.review),
 	)
 }
 
@@ -82,6 +90,38 @@ func (h *InsightHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"contexts": contexts})
+}
+
+func (h *InsightHandler) listForApp(w http.ResponseWriter, r *http.Request) {
+	principal := principalFromContext(r.Context())
+	contexts, err := h.service.ListForApp(r.Context(), principal.AccountID)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"contexts": contexts})
+}
+
+func (h *InsightHandler) review(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Decision                 string   `json:"decision"`
+		ExcludedItemIDs          []string `json:"excluded_item_ids"`
+		ExcludedTimelineEntryIDs []string `json:"excluded_timeline_entry_ids"`
+	}
+	var body request
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+		return
+	}
+	principal := principalFromContext(r.Context())
+	if err := h.service.Review(
+		r.Context(), principal.AccountID, r.PathValue("reportID"),
+		body.Decision, body.ExcludedItemIDs, body.ExcludedTimelineEntryIDs,
+	); err != nil {
+		h.handleError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *InsightHandler) handleError(w http.ResponseWriter, err error) {

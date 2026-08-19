@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.routes import companion, context, health
 from app.core.config import get_settings
+from app.core.observability import SafeRequestLoggingMiddleware
 
 settings = get_settings()
 
@@ -11,6 +12,8 @@ app = FastAPI(
     docs_url="/docs" if settings.environment == "development" else None,
     redoc_url=None,
 )
+
+app.add_middleware(SafeRequestLoggingMiddleware)
 
 app.include_router(health.router)
 app.include_router(companion.router, prefix="/v1")

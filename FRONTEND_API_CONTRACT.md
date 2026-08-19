@@ -708,9 +708,9 @@ Profissional:
 
 O objeto de conexão inclui IDs, status, organização, nome/e-mail do paciente, nome/profissão do profissional, `consent_scopes`, `activated_at`, `ended_at` e `created_at`.
 
-## Contextos periódicos para o profissional
+## Relatórios de Contexto e Jornada
 
-O profissional não acessa o histórico do chatbot. O Go seleciona internamente as mensagens do período autorizado, decifra somente para a chamada serviço-a-serviço e persiste apenas resumo e itens processados, novamente cifrados.
+O profissional não acessa o histórico do chatbot. O Go envia o período autorizado ao serviço de IA e cifra o relatório estruturado. Todo relatório precisa ser revisado pelo paciente antes de aparecer para o profissional.
 
 `POST /v1/professional/patients/{connectionID}/contexts`
 
@@ -745,7 +745,23 @@ Consulte `GET /v1/professional/context-jobs/{jobID}` até atingir um estado term
 }
 ```
 
-Estados: `queued`, `processing`, `completed` ou `failed`. Ao receber `completed`, consulte a listagem de contextos. Em `failed`, mostre uma mensagem genérica; códigos internos e conteúdo sensível não são expostos.
+Estados: `queued`, `processing`, `completed` ou `failed`. `completed` significa que o relatório está pronto para revisão do paciente; ainda não significa que o profissional pode lê-lo.
+
+Paciente:
+
+- `GET /v1/app/context-reports` retorna relatórios pendentes, aprovados e rejeitados;
+- `POST /v1/app/context-reports/{reportID}/review` aprova ou rejeita;
+- na aprovação, `excluded_item_ids` remove itens que o paciente não quer compartilhar.
+
+```json
+{
+  "decision": "approved",
+  "excluded_item_ids": ["uuid-do-item"],
+  "excluded_timeline_entry_ids": ["uuid-da-timeline"]
+}
+```
+
+`decision` aceita `approved` ou `rejected`. Rejeição não aceita exclusões. A operação retorna `204` e só pode ser realizada uma vez enquanto o status for `pending_review`.
 
 `GET /v1/professional/patients/{connectionID}/contexts` retorna:
 
@@ -755,27 +771,51 @@ Estados: `queued`, `processing`, `completed` ou `failed`. Ao receber `completed`
     {
       "id": "uuid",
       "connection_id": "uuid",
+      "schema_version": "journey-report-v1",
+      "title": "Relatório de Contexto e Jornada",
       "period_start": "2026-08-11T00:00:00Z",
       "period_end": "2026-08-18T00:00:00Z",
-      "summary": "Resumo do período",
+      "coverage": {
+        "conversation_count": 3,
+        "user_message_count": 24,
+        "active_day_count": 5,
+        "completeness": "partial",
+        "note": "Cobre apenas os assuntos mencionados."
+      },
+      "summary": "Panorama factual do período",
+      "timeline": [
+        {
+          "id": "uuid",
+          "description": "Relatou uma nova responsabilidade no trabalho.",
+          "occurred_at": "2026-08-14T10:00:00Z"
+        }
+      ],
       "items": [
         {
           "id": "uuid",
-          "kind": "theme",
-          "description": "Tema recorrente identificado",
-          "confidence": 0.91
+          "kind": "challenge",
+          "title": "Pressão no trabalho",
+          "description": "Relatou dificuldade para iniciar uma entrega.",
+          "impact": "Descreveu autocobrança ao fim do dia.",
+          "evidence_strength": "explicit_once",
+          "limitations": [],
+          "included": true
         }
       ],
+      "limitations": [],
       "provider": "openai",
-      "model": "modelo-usado",
-      "prompt_version": "context-v1",
+      "model": "gpt-5.6-terra",
+      "prompt_version": "journey-report-v1",
+      "graph_version": "journey-report-graph-v1",
+      "review_status": "approved",
+      "reviewed_at": "2026-08-18T00:05:00Z",
       "created_at": "2026-08-18T00:00:01Z"
     }
   ]
 }
 ```
 
-Itens `event` e `marked_topic` só aparecem enquanto seus respectivos consentimentos estiverem vigentes. IDs das mensagens-fonte são guardados para rastreabilidade interna, mas nunca enviados ao profissional.
+O endpoint profissional retorna somente relatórios `approved` e itens `included=true`. IDs das mensagens-fonte são guardados para rastreabilidade interna, mas nunca enviados ao profissional ou ao paciente.
 
 Erros imediatos específicos: `403 context_consent_required` e `409 context_processing`. Período sem mensagens, limite de 500 mensagens, indisponibilidade da IA e respostas inválidas são tratados pelo worker e aparecem como job `failed` após a política de tentativas.
 

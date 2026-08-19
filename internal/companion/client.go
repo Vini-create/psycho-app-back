@@ -16,8 +16,10 @@ import (
 var ErrUnavailable = errors.New("companion service is unavailable")
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	ID        string     `json:"id,omitempty"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
 type Request struct {
@@ -26,6 +28,9 @@ type Request struct {
 	UserID         string    `json:"user_id"`
 	Message        string    `json:"message"`
 	History        []Message `json:"history"`
+	LocaleHint     string    `json:"locale_hint,omitempty"`
+	CountryCode    string    `json:"country_code,omitempty"`
+	Timezone       string    `json:"timezone,omitempty"`
 }
 
 type Response struct {
@@ -35,6 +40,9 @@ type Response struct {
 	PromptVersion string `json:"prompt_version"`
 	Blocked       bool   `json:"blocked"`
 	BlockReason   string `json:"block_reason,omitempty"`
+	Language      string `json:"language"`
+	Route         string `json:"route"`
+	GraphVersion  string `json:"graph_version"`
 }
 
 type Client interface {
@@ -53,10 +61,11 @@ func (UnavailableClient) ProcessContext(context.Context, ContextRequest) (Contex
 }
 
 type ContextMessage struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	ConversationID string    `json:"conversation_id,omitempty"`
+	Role           string    `json:"role"`
+	Content        string    `json:"content"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type ContextRequest struct {
@@ -66,22 +75,47 @@ type ContextRequest struct {
 	PeriodStart  time.Time        `json:"period_start"`
 	PeriodEnd    time.Time        `json:"period_end"`
 	Messages     []ContextMessage `json:"messages"`
+	SourceLocale string           `json:"source_locale,omitempty"`
+	TargetLocale string           `json:"target_locale,omitempty"`
 }
 
 type ContextItem struct {
 	Kind             string     `json:"kind"`
+	Title            string     `json:"title"`
 	Description      string     `json:"description"`
-	Confidence       *float64   `json:"confidence,omitempty"`
+	Impact           string     `json:"impact,omitempty"`
+	EvidenceStrength string     `json:"evidence_strength"`
+	OccurredAt       *time.Time `json:"occurred_at,omitempty"`
+	SourceMessageIDs []string   `json:"source_message_ids"`
+	Limitations      []string   `json:"limitations"`
+}
+
+type ReportCoverage struct {
+	ConversationCount int    `json:"conversation_count"`
+	UserMessageCount  int    `json:"user_message_count"`
+	ActiveDayCount    int    `json:"active_day_count"`
+	Completeness      string `json:"completeness"`
+	Note              string `json:"note"`
+}
+
+type TimelineEntry struct {
+	Description      string     `json:"description"`
 	OccurredAt       *time.Time `json:"occurred_at,omitempty"`
 	SourceMessageIDs []string   `json:"source_message_ids"`
 }
 
 type ContextResponse struct {
-	Summary       string        `json:"summary"`
-	Items         []ContextItem `json:"items"`
-	Provider      string        `json:"provider"`
-	Model         string        `json:"model"`
-	PromptVersion string        `json:"prompt_version"`
+	SchemaVersion string          `json:"schema_version"`
+	Title         string          `json:"title"`
+	Coverage      ReportCoverage  `json:"coverage"`
+	Summary       string          `json:"summary"`
+	Timeline      []TimelineEntry `json:"timeline"`
+	Items         []ContextItem   `json:"items"`
+	Limitations   []string        `json:"limitations"`
+	Provider      string          `json:"provider"`
+	Model         string          `json:"model"`
+	PromptVersion string          `json:"prompt_version"`
+	GraphVersion  string          `json:"graph_version"`
 }
 
 type HTTPClient struct {
@@ -202,7 +236,7 @@ func (c *HTTPClient) ProcessContext(
 		return ContextResponse{}, fmt.Errorf("%w: status %d", ErrUnavailable, response.StatusCode)
 	}
 
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 256*1024))
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024))
 	decoder.DisallowUnknownFields()
 	var output ContextResponse
 	if err := decoder.Decode(&output); err != nil {

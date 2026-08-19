@@ -19,8 +19,10 @@ FROM builder AS test
 COPY tests ./tests
 
 RUN uv sync --frozen --extra dev --no-editable \
-    && uv run ruff check app tests \
-    && uv run pytest -q
+	&& uv run ruff format --check app tests \
+	&& uv run ruff check app tests \
+	&& uv run mypy app \
+	&& uv run pytest -q
 
 FROM python:3.13-slim AS runtime
 
