@@ -186,7 +186,7 @@ func (r *Repository) ListConversations(
 	rows, err := r.pool.Query(ctx, `
 		SELECT id::text, title_ciphertext, status, last_message_at, created_at, updated_at
 		FROM chat_conversations
-		WHERE app_user_id = $1
+		WHERE app_user_id = $1 AND status = 'active'
 		ORDER BY COALESCE(last_message_at, created_at) DESC, id DESC
 		LIMIT $2
 	`, appUserID, limit)
@@ -214,6 +214,36 @@ func (r *Repository) ListConversations(
 		return nil, fmt.Errorf("iterate conversations: %w", err)
 	}
 	return conversations, nil
+}
+
+func (r *Repository) RenameConversation(
+	ctx context.Context,
+	appUserID string,
+	conversationID string,
+	titleCiphertext []byte,
+	now time.Time,
+) (storedConversation, error) {
+	var conversation storedConversation
+	err := r.pool.QueryRow(ctx, `
+		UPDATE chat_conversations
+		SET title_ciphertext = $3, updated_at = $4
+		WHERE id = $1 AND app_user_id = $2 AND status = 'active'
+		RETURNING id::text, title_ciphertext, status, last_message_at, created_at, updated_at
+	`, conversationID, appUserID, titleCiphertext, now).Scan(
+		&conversation.ID,
+		&conversation.TitleCiphertext,
+		&conversation.Status,
+		&conversation.LastMessageAt,
+		&conversation.CreatedAt,
+		&conversation.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return storedConversation{}, ErrNotFound
+	}
+	if err != nil {
+		return storedConversation{}, fmt.Errorf("rename conversation: %w", err)
+	}
+	return conversation, nil
 }
 
 func (r *Repository) ArchiveConversation(

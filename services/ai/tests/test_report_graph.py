@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
 from app.core.config import Settings
 from app.domain.models import AtomicFacts, JourneyReportDraft, ReportGenerationInput
 from app.domain.schemas import (
@@ -129,6 +131,7 @@ def test_grounding_validator_rejects_assistant_source_and_diagnosis() -> None:
                 title="Diagnóstico",
                 description="O usuário apresenta depressão.",
                 evidence_strength="explicit_repeated",
+                emotional_valence="unpleasant",
                 source_message_ids=[request.messages[0].id],
             )
         ],
@@ -139,3 +142,36 @@ def test_grounding_validator_rejects_assistant_source_and_diagnosis() -> None:
     assert "unknown_or_non_user_source" in errors
     assert "clinical_assertion" in errors
     assert "repeated_claim_has_one_source" in errors
+
+
+def test_emotional_valence_is_restricted_to_explicit_emotion_items() -> None:
+    source_id = uuid4()
+    emotion = ContextItem(
+        kind="emotion",
+        title="Frustração relatada",
+        description="Relatou ter ficado frustrado durante a espera.",
+        evidence_strength="explicit_once",
+        emotional_valence="unpleasant",
+        source_message_ids=[source_id],
+    )
+
+    assert emotion.emotional_valence == "unpleasant"
+
+    with pytest.raises(ValueError, match="require emotional_valence"):
+        ContextItem(
+            kind="emotion",
+            title="Frustração relatada",
+            description="Relatou ter ficado frustrado.",
+            evidence_strength="explicit_once",
+            source_message_ids=[source_id],
+        )
+
+    with pytest.raises(ValueError, match="only valid for emotion"):
+        ContextItem(
+            kind="event",
+            title="Reunião",
+            description="Relatou uma reunião.",
+            evidence_strength="explicit_once",
+            emotional_valence="neutral",
+            source_message_ids=[source_id],
+        )

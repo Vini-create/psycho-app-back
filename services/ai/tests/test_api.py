@@ -73,7 +73,7 @@ async def test_context_preserves_source_traceability(client: AsyncClient) -> Non
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["schema_version"] == "journey-report-v1"
+    assert body["schema_version"] == "journey-report-v2"
     assert body["items"][0]["source_message_ids"] == [message_id]
 
 

@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from app.domain.schemas import (
     ContextItem,
+    EmotionalValence,
     EvidenceStrength,
     ReportCoverage,
     ReportItemKind,
@@ -93,8 +94,17 @@ class AtomicFact(StrictModel):
     title: str = Field(min_length=1, max_length=240)
     description: str = Field(min_length=1, max_length=2_000)
     evidence_strength: EvidenceStrength
+    emotional_valence: EmotionalValence | None = None
     occurred_at: datetime | None = None
     source_message_ids: list[UUID] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_emotional_valence(self) -> "AtomicFact":
+        if self.kind == "emotion" and self.emotional_valence is None:
+            raise ValueError("emotion facts require emotional_valence")
+        if self.kind != "emotion" and self.emotional_valence is not None:
+            raise ValueError("emotional_valence is only valid for emotion facts")
+        return self
 
 
 class AtomicFacts(StrictModel):

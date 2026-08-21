@@ -86,6 +86,13 @@ EvidenceStrength = Literal[
     "contradictory",
 ]
 
+EmotionalValence = Literal[
+    "pleasant",
+    "unpleasant",
+    "mixed",
+    "neutral",
+]
+
 ReportItemKind = Literal[
     "priority",
     "event",
@@ -123,13 +130,22 @@ class ContextItem(StrictModel):
     description: str = Field(min_length=1, max_length=4_000)
     impact: str | None = Field(default=None, max_length=2_000)
     evidence_strength: EvidenceStrength
+    emotional_valence: EmotionalValence | None = None
     occurred_at: datetime | None = None
     source_message_ids: list[UUID] = Field(min_length=1, max_length=50)
     limitations: list[ReportLimitation] = Field(default_factory=list, max_length=10)
 
+    @model_validator(mode="after")
+    def validate_emotional_valence(self) -> "ContextItem":
+        if self.kind == "emotion" and self.emotional_valence is None:
+            raise ValueError("emotion items require emotional_valence")
+        if self.kind != "emotion" and self.emotional_valence is not None:
+            raise ValueError("emotional_valence is only valid for emotion items")
+        return self
+
 
 class ContextResponse(StrictModel):
-    schema_version: Literal["journey-report-v1"] = "journey-report-v1"
+    schema_version: Literal["journey-report-v2"] = "journey-report-v2"
     title: str = Field(min_length=1, max_length=240)
     coverage: ReportCoverage
     summary: str = Field(min_length=1, max_length=12_000)
@@ -139,7 +155,7 @@ class ContextResponse(StrictModel):
     provider: str = Field(min_length=1, max_length=100)
     model: str = Field(min_length=1, max_length=160)
     prompt_version: str = Field(min_length=1, max_length=100)
-    graph_version: str = Field(default="journey-report-graph-v1", min_length=1, max_length=100)
+    graph_version: str = Field(default="journey-report-graph-v2", min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def validate_sources(self) -> "ContextResponse":

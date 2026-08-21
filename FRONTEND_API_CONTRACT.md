@@ -1,8 +1,8 @@
 # Contrato backend → frontend
 
-Atualizado em: 2026-08-18
+Atualizado em: 2026-08-21
 Versão da API: `v1`
-Status: autenticação, conversas, vínculo profissional–paciente e compartilhamento de contexto implementados.
+Status: autenticação, conversas com IA, renomeação/exclusão de conversa, vínculo profissional–paciente e fluxo autorizado de Relatórios de Contexto e Jornada implementados.
 
 Este arquivo é a fonte de verdade para o agente do frontend. Ele deve ser atualizado sempre que uma rota, payload, status HTTP ou regra de autenticação mudar.
 
@@ -624,6 +624,12 @@ Quando o FastAPI responde, status `201`:
 - `failed`: FastAPI indisponível ou resposta inválida;
 - `pending`: já existe uma geração recente para a mesma mensagem.
 
+O frontend não deve tomar decisões pelo conteúdo de `ai_provider`, `ai_model` ou
+`prompt_version`. Esses campos existem para rastreabilidade. Uma resposta normal pode
+registrar o modelo conversacional, enquanto uma resposta bloqueada pode registrar o
+modelo auxiliar que tomou a decisão de segurança. Para o estado da interface, use
+somente `assistant_status` e os status HTTP.
+
 Se a IA não estiver disponível, a mensagem do usuário continua salva e a API responde `202`:
 
 ```json
@@ -710,9 +716,14 @@ O objeto de conexão inclui IDs, status, organização, nome/e-mail do paciente,
 
 ## Relatórios de Contexto e Jornada
 
-O profissional não acessa o histórico do chatbot. O Go envia o período autorizado ao serviço de IA e cifra o relatório estruturado. Todo relatório precisa ser revisado pelo paciente antes de aparecer para o profissional.
+O profissional não acessa o histórico do chatbot. Ele solicita um período, mas
+essa ação não executa a IA. A geração começa somente quando o paciente confirma
+a solicitação em Minha rede. O relatório estruturado é cifrado e fica disponível
+exclusivamente no produto profissional.
 
-`POST /v1/professional/patients/{connectionID}/contexts`
+### 1. Solicitação profissional
+
+`POST /v1/professional/patients/{connectionID}/context-report-requests`
 
 ```json
 {
@@ -721,16 +732,9 @@ O profissional não acessa o histórico do chatbot. O Go envia o período autori
 }
 ```
 
-Regras: período posterior à ativação do vínculo, no máximo 31 dias e consentimento vigente para `summaries`. A rota não espera a IA: retorna sempre `202` depois de enfileirar o trabalho.
-
-```json
-{
-  "job_id": "uuid",
-  "status": "queued"
-}
-```
-
-Consulte `GET /v1/professional/context-jobs/{jobID}` até atingir um estado terminal:
+Regras: vínculo ativo, período posterior à ativação do vínculo, no máximo 31 dias,
+consentimento vigente para `summaries` e assinatura profissional `trialing` ou
+`active`. Criar a solicitação não cria job e não envia conversas à IA. Retorna `201`:
 
 ```json
 {
@@ -738,30 +742,44 @@ Consulte `GET /v1/professional/context-jobs/{jobID}` até atingir um estado term
   "connection_id": "uuid",
   "period_start": "2026-08-11T00:00:00Z",
   "period_end": "2026-08-18T00:00:00Z",
-  "status": "processing",
-  "attempt_count": 1,
-  "created_at": "2026-08-19T12:00:00Z",
-  "updated_at": "2026-08-19T12:00:01Z"
+  "status": "pending",
+  "requested_at": "2026-08-19T12:00:00Z",
+  "sent_at": null
 }
 ```
 
-Estados: `queued`, `processing`, `completed` ou `failed`. `completed` significa que o relatório está pronto para revisão do paciente; ainda não significa que o profissional pode lê-lo.
+`GET /v1/professional/patients/{connectionID}/context-report-requests` retorna
+`{"requests": [...]}` em ordem decrescente de solicitação.
 
-Paciente:
+### 2. Confirmação do paciente
 
-- `GET /v1/app/context-reports` retorna relatórios pendentes, aprovados e rejeitados;
-- `POST /v1/app/context-reports/{reportID}/review` aprova ou rejeita;
-- na aprovação, `excluded_item_ids` remove itens que o paciente não quer compartilhar.
+O paciente recebe apenas metadados da solicitação. Resumo, timeline, itens,
+proveniência e conteúdo do relatório nunca são retornados pelo produto app.
+
+`GET /v1/app/connections/{connectionID}/context-report-requests` retorna
+`{"requests": [...]}` somente para o titular daquele vínculo.
+
+`POST /v1/app/context-report-requests/{requestID}/send` não recebe corpo nem
+período. O backend usa o período imutável definido pelo profissional, revalida
+vínculo, consentimento e assinatura e cria o job de forma atômica. Retorna `202`:
 
 ```json
 {
-  "decision": "approved",
-  "excluded_item_ids": ["uuid-do-item"],
-  "excluded_timeline_entry_ids": ["uuid-da-timeline"]
+  "request_id": "uuid",
+  "status": "processing"
 }
 ```
 
-`decision` aceita `approved` ou `rejected`. Rejeição não aceita exclusões. A operação retorna `204` e só pode ser realizada uma vez enquanto o status for `pending_review`.
+Estados da solicitação: `pending`, `processing`, `sent`, `declined`, `expired` ou
+`failed`. `sent_at` só existe em `sent`. Durante `processing`, o frontend pode
+consultar novamente a listagem a cada cinco segundos. `sent` significa que o
+relatório foi concluído e entregue ao profissional solicitante.
+
+Não existem rotas app para listar, abrir, revisar ou gerar relatórios. Também não
+existe rota profissional para gerar diretamente um relatório ou escolher outro
+período depois da confirmação.
+
+### 3. Leitura profissional
 
 `GET /v1/professional/patients/{connectionID}/contexts` retorna:
 
@@ -771,7 +789,7 @@ Paciente:
     {
       "id": "uuid",
       "connection_id": "uuid",
-      "schema_version": "journey-report-v1",
+      "schema_version": "journey-report-v2",
       "title": "Relatório de Contexto e Jornada",
       "period_start": "2026-08-11T00:00:00Z",
       "period_end": "2026-08-18T00:00:00Z",
@@ -793,11 +811,12 @@ Paciente:
       "items": [
         {
           "id": "uuid",
-          "kind": "challenge",
-          "title": "Pressão no trabalho",
-          "description": "Relatou dificuldade para iniciar uma entrega.",
-          "impact": "Descreveu autocobrança ao fim do dia.",
+          "kind": "emotion",
+          "title": "Frustração durante a espera",
+          "description": "Relatou ter ficado frustrado enquanto aguardava retorno.",
+          "impact": "Descreveu ter continuado pensando no assunto ao fim do dia.",
           "evidence_strength": "explicit_once",
+          "emotional_valence": "unpleasant",
           "limitations": [],
           "included": true
         }
@@ -805,8 +824,8 @@ Paciente:
       "limitations": [],
       "provider": "openai",
       "model": "gpt-5.6-terra",
-      "prompt_version": "journey-report-v1",
-      "graph_version": "journey-report-graph-v1",
+      "prompt_version": "journey-report-v2",
+      "graph_version": "journey-report-graph-v2",
       "review_status": "approved",
       "reviewed_at": "2026-08-18T00:05:00Z",
       "created_at": "2026-08-18T00:00:01Z"
@@ -815,9 +834,33 @@ Paciente:
 }
 ```
 
-O endpoint profissional retorna somente relatórios `approved` e itens `included=true`. IDs das mensagens-fonte são guardados para rastreabilidade interna, mas nunca enviados ao profissional ou ao paciente.
+Em relatórios `journey-report-v2`, itens com `kind="emotion"` sempre incluem
+`emotional_valence`: `pleasant`, `unpleasant`, `mixed` ou `neutral`.
+O campo apenas organiza emoções explicitamente relatadas; não representa
+intensidade, gravidade, risco, diagnóstico ou análise do estilo de escrita.
+Itens de outros tipos omitem o campo. Relatórios v1 já persistidos continuam
+válidos e podem não trazer `emotional_valence`.
 
-Erros imediatos específicos: `403 context_consent_required` e `409 context_processing`. Período sem mensagens, limite de 500 mensagens, indisponibilidade da IA e respostas inválidas são tratados pelo worker e aparecem como job `failed` após a política de tentativas.
+O endpoint profissional retorna somente relatórios entregues, itens
+`included=true` e entradas de timeline incluídas. Novos relatórios são persistidos
+como `approved` porque a autorização ocorreu antes da geração; `review_status` e
+`reviewed_at` permanecem no payload por compatibilidade com relatórios históricos.
+IDs das mensagens-fonte são guardados para rastreabilidade interna, mas nunca são
+enviados ao profissional ou ao paciente.
+
+Fluxo esperado no frontend:
+
+1. O profissional cria a solicitação com período fechado.
+2. O paciente encontra a solicitação no vínculo e confirma o envio.
+3. O backend revalida todas as autorizações e cria o job.
+4. O worker gera e cifra o relatório.
+5. A solicitação muda para `sent` e o relatório aparece apenas para o profissional.
+
+Erros imediatos específicos: `402 subscription_required`,
+`403 context_consent_required`, `409 context_request_conflict` e
+`409 context_request_resolved`. Período sem mensagens, limite de 500 mensagens,
+indisponibilidade da IA e respostas inválidas são tratados pelo worker e mudam a
+solicitação para `failed` após a política de tentativas.
 
 ## Fora do MVP funcional atual
 

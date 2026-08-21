@@ -6,12 +6,14 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("resource not found")
-	ErrInvalidInput   = errors.New("invalid input")
-	ErrForbidden      = errors.New("operation is forbidden")
-	ErrConflict       = errors.New("processing already in progress")
-	ErrNoMessages     = errors.New("period has no messages")
-	ErrPeriodTooLarge = errors.New("period contains too many messages")
+	ErrNotFound             = errors.New("resource not found")
+	ErrInvalidInput         = errors.New("invalid input")
+	ErrForbidden            = errors.New("operation is forbidden")
+	ErrConflict             = errors.New("processing already in progress")
+	ErrRequestResolved      = errors.New("report request is already resolved")
+	ErrSubscriptionRequired = errors.New("active subscription is required")
+	ErrNoMessages           = errors.New("period has no messages")
+	ErrPeriodTooLarge       = errors.New("period contains too many messages")
 )
 
 type Item struct {
@@ -21,6 +23,7 @@ type Item struct {
 	Description      string     `json:"description"`
 	Impact           string     `json:"impact,omitempty"`
 	EvidenceStrength string     `json:"evidence_strength"`
+	EmotionalValence string     `json:"emotional_valence,omitempty"`
 	OccurredAt       *time.Time `json:"occurred_at,omitempty"`
 	Limitations      []string   `json:"limitations"`
 	Included         bool       `json:"included"`
@@ -61,20 +64,19 @@ type Summary struct {
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
-type GenerationResult struct {
-	JobID   string   `json:"job_id"`
-	Status  string   `json:"status"`
-	Summary *Summary `json:"context,omitempty"`
+type ReportRequest struct {
+	ID                      string     `json:"id"`
+	ConnectionID            string     `json:"connection_id"`
+	ProfessionalDisplayName string     `json:"professional_display_name,omitempty"`
+	PatientDisplayName      string     `json:"patient_display_name,omitempty"`
+	PeriodStart             time.Time  `json:"period_start"`
+	PeriodEnd               time.Time  `json:"period_end"`
+	Status                  string     `json:"status"`
+	RequestedAt             time.Time  `json:"requested_at"`
+	SentAt                  *time.Time `json:"sent_at"`
 }
 
-type Job struct {
-	ID           string     `json:"id"`
-	ConnectionID string     `json:"connection_id"`
-	PeriodStart  time.Time  `json:"period_start"`
-	PeriodEnd    time.Time  `json:"period_end"`
-	Status       string     `json:"status"`
-	AttemptCount int        `json:"attempt_count"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+type SendReportResult struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
 }

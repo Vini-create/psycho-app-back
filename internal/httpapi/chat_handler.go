@@ -32,6 +32,7 @@ func (h *ChatHandler) RegisterRoutes(mux *http.ServeMux, authHandler *AuthHandle
 	mux.HandleFunc("DELETE /v1/app/consents/{consentType}", requireApp(h.revokeConsent))
 	mux.HandleFunc("GET /v1/app/conversations", requireApp(h.listConversations))
 	mux.HandleFunc("POST /v1/app/conversations", requireApp(h.createConversation))
+	mux.HandleFunc("PATCH /v1/app/conversations/{conversationID}", requireApp(h.renameConversation))
 	mux.HandleFunc("DELETE /v1/app/conversations/{conversationID}", requireApp(h.archiveConversation))
 	mux.HandleFunc("GET /v1/app/conversations/{conversationID}/messages", requireApp(h.listMessages))
 	mux.HandleFunc("POST /v1/app/conversations/{conversationID}/messages", requireApp(h.sendMessage))
@@ -111,6 +112,26 @@ func (h *ChatHandler) listConversations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"conversations": conversations})
+}
+
+func (h *ChatHandler) renameConversation(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Title string `json:"title"`
+	}
+	var body request
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+		return
+	}
+	principal := principalFromContext(r.Context())
+	conversation, err := h.service.RenameConversation(
+		r.Context(), principal.AccountID, r.PathValue("conversationID"), body.Title,
+	)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, conversation)
 }
 
 func (h *ChatHandler) archiveConversation(w http.ResponseWriter, r *http.Request) {

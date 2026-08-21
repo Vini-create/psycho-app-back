@@ -85,6 +85,7 @@ type ContextItem struct {
 	Description      string     `json:"description"`
 	Impact           string     `json:"impact,omitempty"`
 	EvidenceStrength string     `json:"evidence_strength"`
+	EmotionalValence string     `json:"emotional_valence,omitempty"`
 	OccurredAt       *time.Time `json:"occurred_at,omitempty"`
 	SourceMessageIDs []string   `json:"source_message_ids"`
 	Limitations      []string   `json:"limitations"`

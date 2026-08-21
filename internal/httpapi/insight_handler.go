@@ -27,38 +27,39 @@ func (h *InsightHandler) RegisterRoutes(mux *http.ServeMux, authHandler *AuthHan
 	}
 
 	mux.HandleFunc(
-		"POST /v1/professional/patients/{connectionID}/contexts",
-		requireProfessional(h.generate),
-	)
-	mux.HandleFunc(
 		"GET /v1/professional/patients/{connectionID}/contexts",
 		requireProfessional(h.list),
 	)
 	mux.HandleFunc(
-		"GET /v1/professional/context-jobs/{jobID}",
-		requireProfessional(h.getJob),
+		"POST /v1/professional/patients/{connectionID}/context-report-requests",
+		requireProfessional(h.createRequest),
 	)
-	mux.HandleFunc("GET /v1/app/context-reports", requireApp(h.listForApp))
 	mux.HandleFunc(
-		"POST /v1/app/context-reports/{reportID}/review",
-		requireApp(h.review),
+		"GET /v1/professional/patients/{connectionID}/context-report-requests",
+		requireProfessional(h.listRequestsForProfessional),
+	)
+	mux.HandleFunc(
+		"GET /v1/app/connections/{connectionID}/context-report-requests",
+		requireApp(h.listRequestsForApp),
+	)
+	mux.HandleFunc(
+		"POST /v1/app/context-report-requests/{requestID}/send",
+		requireApp(h.sendRequestedReport),
 	)
 }
 
-func (h *InsightHandler) generate(w http.ResponseWriter, r *http.Request) {
+func (h *InsightHandler) createRequest(w http.ResponseWriter, r *http.Request) {
 	type request struct {
 		PeriodStart time.Time `json:"period_start"`
 		PeriodEnd   time.Time `json:"period_end"`
 	}
-
 	var body request
 	if err := readJSON(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
 		return
 	}
-
 	principal := principalFromContext(r.Context())
-	result, err := h.service.Generate(
+	result, err := h.service.CreateReportRequest(
 		r.Context(), principal.AccountID, r.PathValue("connectionID"),
 		body.PeriodStart, body.PeriodEnd,
 	)
@@ -66,18 +67,43 @@ func (h *InsightHandler) generate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
-
-	writeJSON(w, http.StatusAccepted, result)
+	writeJSON(w, http.StatusCreated, result)
 }
 
-func (h *InsightHandler) getJob(w http.ResponseWriter, r *http.Request) {
+func (h *InsightHandler) listRequestsForProfessional(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
-	job, err := h.service.GetJob(r.Context(), principal.AccountID, r.PathValue("jobID"))
+	requests, err := h.service.ListReportRequestsForProfessional(
+		r.Context(), principal.AccountID, r.PathValue("connectionID"),
+	)
 	if err != nil {
 		h.handleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, map[string]any{"requests": requests})
+}
+
+func (h *InsightHandler) listRequestsForApp(w http.ResponseWriter, r *http.Request) {
+	principal := principalFromContext(r.Context())
+	requests, err := h.service.ListReportRequestsForApp(
+		r.Context(), principal.AccountID, r.PathValue("connectionID"),
+	)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": requests})
+}
+
+func (h *InsightHandler) sendRequestedReport(w http.ResponseWriter, r *http.Request) {
+	principal := principalFromContext(r.Context())
+	result, err := h.service.SendRequestedReport(
+		r.Context(), principal.AccountID, r.PathValue("requestID"),
+	)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, result)
 }
 
 func (h *InsightHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -92,38 +118,6 @@ func (h *InsightHandler) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"contexts": contexts})
 }
 
-func (h *InsightHandler) listForApp(w http.ResponseWriter, r *http.Request) {
-	principal := principalFromContext(r.Context())
-	contexts, err := h.service.ListForApp(r.Context(), principal.AccountID)
-	if err != nil {
-		h.handleError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"contexts": contexts})
-}
-
-func (h *InsightHandler) review(w http.ResponseWriter, r *http.Request) {
-	type request struct {
-		Decision                 string   `json:"decision"`
-		ExcludedItemIDs          []string `json:"excluded_item_ids"`
-		ExcludedTimelineEntryIDs []string `json:"excluded_timeline_entry_ids"`
-	}
-	var body request
-	if err := readJSON(w, r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
-		return
-	}
-	principal := principalFromContext(r.Context())
-	if err := h.service.Review(
-		r.Context(), principal.AccountID, r.PathValue("reportID"),
-		body.Decision, body.ExcludedItemIDs, body.ExcludedTimelineEntryIDs,
-	); err != nil {
-		h.handleError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (h *InsightHandler) handleError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, insight.ErrInvalidInput):
@@ -131,7 +125,11 @@ func (h *InsightHandler) handleError(w http.ResponseWriter, err error) {
 	case errors.Is(err, insight.ErrForbidden):
 		writeError(w, http.StatusForbidden, "context_consent_required", "current consent does not allow this context")
 	case errors.Is(err, insight.ErrConflict):
-		writeError(w, http.StatusConflict, "context_processing", "this period is already being processed")
+		writeError(w, http.StatusConflict, "context_request_conflict", "this period already has an open request")
+	case errors.Is(err, insight.ErrRequestResolved):
+		writeError(w, http.StatusConflict, "context_request_resolved", "this report request was already answered")
+	case errors.Is(err, insight.ErrSubscriptionRequired):
+		writeError(w, http.StatusPaymentRequired, "subscription_required", "an active professional subscription is required")
 	case errors.Is(err, insight.ErrNoMessages):
 		writeError(w, http.StatusUnprocessableEntity, "context_no_messages", "the selected period has no eligible messages")
 	case errors.Is(err, insight.ErrPeriodTooLarge):

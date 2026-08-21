@@ -20,9 +20,22 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 }
 
 type connectionAccess struct {
-	AppUserID   string
-	Scopes      []string
-	ActivatedAt time.Time
+	AppUserID          string
+	Scopes             []string
+	ActivatedAt        time.Time
+	SubscriptionStatus string
+}
+
+type storedReportRequest struct {
+	ID                      string
+	ConnectionID            string
+	ProfessionalDisplayName string
+	PatientDisplayName      string
+	PeriodStart             time.Time
+	PeriodEnd               time.Time
+	Status                  string
+	RequestedAt             time.Time
+	SentAt                  *time.Time
 }
 
 type storedSourceMessage struct {
@@ -63,6 +76,7 @@ type storedItem struct {
 	DescriptionCiphertext []byte
 	ImpactCiphertext      []byte
 	EvidenceStrength      string
+	EmotionalValence      string
 	OccurredAt            *time.Time
 	LimitationsCiphertext []byte
 	Included              bool
@@ -93,6 +107,7 @@ type itemWrite struct {
 	DescriptionCiphertext []byte
 	ImpactCiphertext      []byte
 	EvidenceStrength      string
+	EmotionalValence      string
 	OccurredAt            *time.Time
 	LimitationsCiphertext []byte
 	SourceMessageIDs      []string
@@ -131,6 +146,7 @@ func (r *Repository) ProfessionalConnectionAccess(
 	var access connectionAccess
 	err := r.pool.QueryRow(ctx, `
 		SELECT connection.app_user_id::text, connection.activated_at,
+		       COALESCE(subscription.status, 'inactive'),
 		       COALESCE(array_agg(consent.scope ORDER BY consent.scope)
 		           FILTER (
 				WHERE consent.scope IS NOT NULL
@@ -140,14 +156,17 @@ func (r *Repository) ProfessionalConnectionAccess(
 		FROM professional_patient_connections AS connection
 		JOIN organization_memberships AS membership
 		  ON membership.id = connection.professional_membership_id
+		LEFT JOIN subscriptions AS subscription
+		  ON subscription.organization_id = connection.organization_id
 		LEFT JOIN connection_consents AS consent ON consent.connection_id = connection.id
 		WHERE connection.id = $1
 		  AND membership.professional_user_id = $2
 		  AND membership.status = 'active'
 		  AND connection.status = 'active'
-		GROUP BY connection.id
+		GROUP BY connection.id, subscription.status
 	`, connectionID, professionalUserID, policyVersion).Scan(
-		&access.AppUserID, &access.ActivatedAt, &access.Scopes,
+		&access.AppUserID, &access.ActivatedAt, &access.SubscriptionStatus,
+		&access.Scopes,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return connectionAccess{}, ErrNotFound
@@ -158,16 +177,216 @@ func (r *Repository) ProfessionalConnectionAccess(
 	return access, nil
 }
 
-func (r *Repository) CreateJob(
+func (r *Repository) CreateReportRequest(
 	ctx context.Context,
 	connectionID string,
 	professionalUserID string,
 	periodStart time.Time,
 	periodEnd time.Time,
 	now time.Time,
-) (string, error) {
-	var jobID string
+) (storedReportRequest, error) {
+	var request storedReportRequest
 	err := r.pool.QueryRow(ctx, `
+		INSERT INTO context_report_requests (
+			connection_id, requested_by_professional_user_id,
+			period_start, period_end, status, requested_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, 'pending', $5, $5)
+		RETURNING id::text, connection_id::text, period_start, period_end,
+		          status, requested_at, sent_at
+	`, connectionID, professionalUserID, periodStart, periodEnd, now).Scan(
+		&request.ID, &request.ConnectionID, &request.PeriodStart, &request.PeriodEnd,
+		&request.Status, &request.RequestedAt, &request.SentAt,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return storedReportRequest{}, ErrConflict
+		}
+		return storedReportRequest{}, fmt.Errorf("create context report request: %w", err)
+	}
+	return request, nil
+}
+
+func (r *Repository) ListReportRequestsForProfessional(
+	ctx context.Context,
+	professionalUserID string,
+	connectionID string,
+	limit int,
+) ([]storedReportRequest, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT request.id::text, request.connection_id::text,
+		       professional.display_name, patient.display_name,
+		       request.period_start, request.period_end, request.status,
+		       request.requested_at, request.sent_at
+		FROM context_report_requests AS request
+		JOIN professional_patient_connections AS connection
+		  ON connection.id = request.connection_id
+		JOIN organization_memberships AS membership
+		  ON membership.id = connection.professional_membership_id
+		JOIN professional_users AS professional
+		  ON professional.id = request.requested_by_professional_user_id
+		JOIN app_users AS patient ON patient.id = connection.app_user_id
+		WHERE request.connection_id = $1
+		  AND membership.professional_user_id = $2
+		ORDER BY request.requested_at DESC
+		LIMIT $3
+	`, connectionID, professionalUserID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query professional context report requests: %w", err)
+	}
+	defer rows.Close()
+	return scanReportRequests(rows)
+}
+
+func (r *Repository) ListReportRequestsForApp(
+	ctx context.Context,
+	appUserID string,
+	connectionID string,
+	limit int,
+) ([]storedReportRequest, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT request.id::text, request.connection_id::text,
+		       professional.display_name, patient.display_name,
+		       request.period_start, request.period_end, request.status,
+		       request.requested_at, request.sent_at
+		FROM context_report_requests AS request
+		JOIN professional_patient_connections AS connection
+		  ON connection.id = request.connection_id
+		JOIN professional_users AS professional
+		  ON professional.id = request.requested_by_professional_user_id
+		JOIN app_users AS patient ON patient.id = connection.app_user_id
+		WHERE request.connection_id = $1 AND connection.app_user_id = $2
+		ORDER BY request.requested_at DESC
+		LIMIT $3
+	`, connectionID, appUserID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query app context report requests: %w", err)
+	}
+	defer rows.Close()
+	return scanReportRequests(rows)
+}
+
+func (r *Repository) AppOwnsConnection(
+	ctx context.Context,
+	appUserID string,
+	connectionID string,
+) error {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT true
+		FROM professional_patient_connections
+		WHERE id = $1 AND app_user_id = $2
+	`, connectionID, appUserID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("check app connection ownership: %w", err)
+	}
+	return nil
+}
+
+func scanReportRequests(rows pgx.Rows) ([]storedReportRequest, error) {
+	requests := make([]storedReportRequest, 0)
+	for rows.Next() {
+		var request storedReportRequest
+		if err := rows.Scan(
+			&request.ID, &request.ConnectionID,
+			&request.ProfessionalDisplayName, &request.PatientDisplayName,
+			&request.PeriodStart, &request.PeriodEnd, &request.Status,
+			&request.RequestedAt, &request.SentAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan context report request: %w", err)
+		}
+		requests = append(requests, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate context report requests: %w", err)
+	}
+	return requests, nil
+}
+
+func (r *Repository) AuthorizeReportRequest(
+	ctx context.Context,
+	appUserID string,
+	requestID string,
+	policyVersion string,
+	now time.Time,
+) (string, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin context report authorization: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var connectionID, professionalUserID, status string
+	var periodStart, periodEnd time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT request.connection_id::text,
+		       request.requested_by_professional_user_id::text,
+		       request.period_start, request.period_end, request.status
+		FROM context_report_requests AS request
+		JOIN professional_patient_connections AS connection
+		  ON connection.id = request.connection_id
+		WHERE request.id = $1 AND connection.app_user_id = $2
+		FOR UPDATE OF request
+	`, requestID, appUserID).Scan(
+		&connectionID, &professionalUserID, &periodStart, &periodEnd, &status,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("lock context report request: %w", err)
+	}
+	if status != "pending" {
+		return "", ErrRequestResolved
+	}
+
+	var connectionStatus, membershipStatus, subscriptionStatus string
+	var activatedAt time.Time
+	var consentActive bool
+	err = tx.QueryRow(ctx, `
+		SELECT connection.status, connection.activated_at, membership.status,
+		       COALESCE(subscription.status, 'inactive'),
+		       EXISTS (
+				SELECT 1 FROM connection_consents AS consent
+				WHERE consent.connection_id = connection.id
+				  AND consent.scope = 'summaries'
+				  AND consent.policy_version = $4
+				  AND consent.revoked_at IS NULL
+		       )
+		FROM professional_patient_connections AS connection
+		JOIN organization_memberships AS membership
+		  ON membership.id = connection.professional_membership_id
+		LEFT JOIN subscriptions AS subscription
+		  ON subscription.organization_id = connection.organization_id
+		WHERE connection.id = $1
+		  AND connection.app_user_id = $2
+		  AND membership.professional_user_id = $3
+	`, connectionID, appUserID, professionalUserID, policyVersion).Scan(
+		&connectionStatus, &activatedAt, &membershipStatus,
+		&subscriptionStatus, &consentActive,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("recheck context report authorization: %w", err)
+	}
+	if connectionStatus != "active" || membershipStatus != "active" || periodStart.Before(activatedAt) {
+		return "", ErrForbidden
+	}
+	if !consentActive {
+		return "", ErrForbidden
+	}
+	if subscriptionStatus != "active" && subscriptionStatus != "trialing" {
+		return "", ErrSubscriptionRequired
+	}
+
+	var jobID string
+	err = tx.QueryRow(ctx, `
 		INSERT INTO context_processing_jobs (
 			connection_id, requested_by_professional_user_id,
 			period_start, period_end, status, created_at, updated_at
@@ -180,7 +399,22 @@ func (r *Repository) CreateJob(
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return "", ErrConflict
 		}
-		return "", fmt.Errorf("create context processing job: %w", err)
+		return "", fmt.Errorf("create authorized context processing job: %w", err)
+	}
+
+	result, err := tx.Exec(ctx, `
+		UPDATE context_report_requests
+		SET status = 'processing', processing_job_id = $2, updated_at = $3
+		WHERE id = $1 AND status = 'pending'
+	`, requestID, jobID, now)
+	if err != nil {
+		return "", fmt.Errorf("mark context report request processing: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return "", ErrRequestResolved
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit context report authorization: %w", err)
 	}
 	return jobID, nil
 }
@@ -213,14 +447,17 @@ func (r *Repository) ClaimNextJob(
 ) (storedJob, bool, error) {
 	job, err := scanStoredJob(r.pool.QueryRow(ctx, `
 		WITH candidate AS (
-			SELECT id
-			FROM context_processing_jobs
+			SELECT job.id
+			FROM context_processing_jobs AS job
+			JOIN context_report_requests AS request
+			  ON request.processing_job_id = job.id
+			 AND request.status = 'processing'
 			WHERE (
-				status = 'queued' AND available_at <= $1
+				job.status = 'queued' AND job.available_at <= $1
 			) OR (
-				status = 'processing' AND claimed_at < $2
+				job.status = 'processing' AND job.claimed_at < $2
 			)
-			ORDER BY available_at, created_at
+			ORDER BY job.available_at, job.created_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
@@ -311,13 +548,31 @@ func (r *Repository) FailJob(
 	failureCode string,
 	now time.Time,
 ) error {
-	_, err := r.pool.Exec(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin failed context job: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
 		UPDATE context_processing_jobs
 		SET status = 'failed', failure_code = $2, claimed_at = NULL, updated_at = $3
 		WHERE id = $1 AND status = 'processing'
-	`, jobID, failureCode, now)
-	if err != nil {
+	`, jobID, failureCode, now); err != nil {
 		return fmt.Errorf("fail context processing job: %w", err)
+	}
+	requestResult, err := tx.Exec(ctx, `
+		UPDATE context_report_requests
+		SET status = 'failed', updated_at = $2
+		WHERE processing_job_id = $1 AND status = 'processing'
+	`, jobID, now)
+	if err != nil {
+		return fmt.Errorf("fail context report request: %w", err)
+	}
+	if requestResult.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit failed context job: %w", err)
 	}
 	return nil
 }
@@ -358,11 +613,11 @@ func (r *Repository) CompleteJob(
 			coverage_user_message_count, coverage_active_day_count,
 			coverage_completeness, coverage_note_ciphertext, summary_ciphertext,
 			limitations_ciphertext, provider, model, prompt_version, graph_version,
-			review_status, created_at
+			review_status, reviewed_at, created_at
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			$14, $15, $16, $17, 'pending_review', $18
+			$14, $15, $16, $17, 'approved', $18, $18
 		)
 		RETURNING id::text
 	`, connectionID, jobID, report.SchemaVersion, report.TitleCiphertext,
@@ -403,13 +658,13 @@ func (r *Repository) CompleteJob(
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO context_items (
 				context_summary_id, kind, title_ciphertext, description_ciphertext,
-				impact_ciphertext, evidence_strength, occurred_at,
+				impact_ciphertext, evidence_strength, emotional_valence, occurred_at,
 				limitations_ciphertext, created_at
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10)
 			RETURNING id::text
 		`, summaryID, item.Kind, item.TitleCiphertext, item.DescriptionCiphertext,
-			item.ImpactCiphertext, item.EvidenceStrength, item.OccurredAt,
+			item.ImpactCiphertext, item.EvidenceStrength, item.EmotionalValence, item.OccurredAt,
 			item.LimitationsCiphertext, now).Scan(&itemID); err != nil {
 			return "", fmt.Errorf("insert context item: %w", err)
 		}
@@ -421,6 +676,18 @@ func (r *Repository) CompleteJob(
 				return "", fmt.Errorf("insert context item source: %w", err)
 			}
 		}
+	}
+
+	requestResult, err := tx.Exec(ctx, `
+		UPDATE context_report_requests
+		SET status = 'sent', sent_at = $2, updated_at = $2
+		WHERE processing_job_id = $1 AND status = 'processing'
+	`, jobID, now)
+	if err != nil {
+		return "", fmt.Errorf("complete context report request: %w", err)
+	}
+	if requestResult.RowsAffected() != 1 {
+		return "", ErrConflict
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -487,119 +754,6 @@ func (r *Repository) ListSummaries(
 	return summaries, nil
 }
 
-func (r *Repository) ListSummariesForApp(
-	ctx context.Context,
-	appUserID string,
-	limit int,
-) ([]storedSummary, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT summary.id::text, summary.connection_id::text, summary.schema_version,
-		       summary.title_ciphertext, summary.period_start, summary.period_end,
-		       summary.coverage_conversation_count, summary.coverage_user_message_count,
-		       summary.coverage_active_day_count, summary.coverage_completeness,
-		       summary.coverage_note_ciphertext, summary.summary_ciphertext,
-		       summary.limitations_ciphertext, summary.provider, summary.model,
-		       summary.prompt_version, summary.graph_version, summary.review_status,
-		       summary.reviewed_at, summary.created_at
-		FROM context_summaries AS summary
-		JOIN professional_patient_connections AS connection
-		  ON connection.id = summary.connection_id
-		WHERE connection.app_user_id = $1 AND connection.status = 'active'
-		ORDER BY summary.period_end DESC
-		LIMIT $2
-	`, appUserID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("query app context summaries: %w", err)
-	}
-	defer rows.Close()
-	summaries := make([]storedSummary, 0)
-	for rows.Next() {
-		var summary storedSummary
-		if err := scanStoredSummary(rows, &summary); err != nil {
-			return nil, fmt.Errorf("scan app context summary: %w", err)
-		}
-		summaries = append(summaries, summary)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate app context summaries: %w", err)
-	}
-	return summaries, nil
-}
-
-func (r *Repository) ReviewSummary(
-	ctx context.Context,
-	appUserID string,
-	summaryID string,
-	decision string,
-	excludedItemIDs []string,
-	excludedTimelineEntryIDs []string,
-	now time.Time,
-) error {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin context review: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	var currentStatus string
-	err = tx.QueryRow(ctx, `
-		SELECT summary.review_status
-		FROM context_summaries AS summary
-		JOIN professional_patient_connections AS connection
-		  ON connection.id = summary.connection_id
-		WHERE summary.id = $1 AND connection.app_user_id = $2
-		FOR UPDATE OF summary
-	`, summaryID, appUserID).Scan(&currentStatus)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("lock context review: %w", err)
-	}
-	if currentStatus != "pending_review" {
-		return ErrConflict
-	}
-
-	if decision == "approved" && len(excludedItemIDs) > 0 {
-		result, err := tx.Exec(ctx, `
-			UPDATE context_items
-			SET included = false
-			WHERE context_summary_id = $1 AND id = ANY($2::uuid[])
-		`, summaryID, excludedItemIDs)
-		if err != nil {
-			return fmt.Errorf("exclude context review items: %w", err)
-		}
-		if result.RowsAffected() != int64(len(excludedItemIDs)) {
-			return ErrInvalidInput
-		}
-	}
-	if decision == "approved" && len(excludedTimelineEntryIDs) > 0 {
-		result, err := tx.Exec(ctx, `
-			UPDATE context_timeline_entries
-			SET included = false
-			WHERE context_summary_id = $1 AND id = ANY($2::uuid[])
-		`, summaryID, excludedTimelineEntryIDs)
-		if err != nil {
-			return fmt.Errorf("exclude context review timeline entries: %w", err)
-		}
-		if result.RowsAffected() != int64(len(excludedTimelineEntryIDs)) {
-			return ErrInvalidInput
-		}
-	}
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE context_summaries
-		SET review_status = $2, reviewed_at = $3
-		WHERE id = $1
-	`, summaryID, decision, now); err != nil {
-		return fmt.Errorf("complete context review: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit context review: %w", err)
-	}
-	return nil
-}
-
 func scanStoredSummary(row rowScanner, summary *storedSummary) error {
 	return row.Scan(
 		&summary.ID, &summary.ConnectionID, &summary.SchemaVersion,
@@ -616,7 +770,7 @@ func scanStoredSummary(row rowScanner, summary *storedSummary) error {
 func (r *Repository) ListItems(ctx context.Context, summaryID string) ([]storedItem, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id::text, kind, title_ciphertext, description_ciphertext,
-		       impact_ciphertext, evidence_strength, occurred_at,
+		       impact_ciphertext, evidence_strength, COALESCE(emotional_valence, ''), occurred_at,
 		       limitations_ciphertext, included
 		FROM context_items
 		WHERE context_summary_id = $1 AND included = true
@@ -631,7 +785,7 @@ func (r *Repository) ListItems(ctx context.Context, summaryID string) ([]storedI
 		var item storedItem
 		if err := rows.Scan(
 			&item.ID, &item.Kind, &item.TitleCiphertext, &item.DescriptionCiphertext,
-			&item.ImpactCiphertext, &item.EvidenceStrength, &item.OccurredAt,
+			&item.ImpactCiphertext, &item.EvidenceStrength, &item.EmotionalValence, &item.OccurredAt,
 			&item.LimitationsCiphertext, &item.Included,
 		); err != nil {
 			return nil, fmt.Errorf("scan context item: %w", err)

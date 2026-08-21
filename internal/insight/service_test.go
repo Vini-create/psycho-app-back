@@ -30,3 +30,25 @@ func TestValidItemKindRejectsRawMessage(t *testing.T) {
 		t.Fatal("raw_message must never be accepted as a generated context item")
 	}
 }
+
+func TestValidEmotionalValence(t *testing.T) {
+	tests := []struct {
+		kind    string
+		value   string
+		isValid bool
+	}{
+		{kind: "emotion", value: "pleasant", isValid: true},
+		{kind: "emotion", value: "unpleasant", isValid: true},
+		{kind: "emotion", value: "mixed", isValid: true},
+		{kind: "emotion", value: "neutral", isValid: true},
+		{kind: "emotion", value: "", isValid: false},
+		{kind: "event", value: "pleasant", isValid: false},
+		{kind: "event", value: "", isValid: true},
+	}
+
+	for _, test := range tests {
+		if got := validEmotionalValence(test.kind, test.value); got != test.isValid {
+			t.Fatalf("validEmotionalValence(%q, %q) = %v, want %v", test.kind, test.value, got, test.isValid)
+		}
+	}
+}

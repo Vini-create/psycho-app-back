@@ -66,6 +66,15 @@ func TestRepositoryConversationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation() error = %v", err)
 	}
+	renamed, err := repository.RenameConversation(
+		ctx, appUserID, conversation.ID, []byte("renamed-encrypted-title"), now.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("RenameConversation() error = %v", err)
+	}
+	if string(renamed.TitleCiphertext) != "renamed-encrypted-title" {
+		t.Fatalf("RenameConversation() title = %q", renamed.TitleCiphertext)
+	}
 
 	userMessage, created, err := repository.AppendUserMessage(
 		ctx,
@@ -115,5 +124,16 @@ func TestRepositoryConversationLifecycle(t *testing.T) {
 	}
 	if len(messages) != 2 || messages[0].Role != "user" || messages[1].Role != "assistant" {
 		t.Fatalf("ListMessages() = %#v", messages)
+	}
+
+	if err := repository.ArchiveConversation(ctx, appUserID, conversation.ID, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("ArchiveConversation() error = %v", err)
+	}
+	activeConversations, err := repository.ListConversations(ctx, appUserID, 50)
+	if err != nil {
+		t.Fatalf("ListConversations() after archive error = %v", err)
+	}
+	if len(activeConversations) != 0 {
+		t.Fatalf("ListConversations() returned archived conversation: %#v", activeConversations)
 	}
 }

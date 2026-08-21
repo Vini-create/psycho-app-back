@@ -48,6 +48,8 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 		  VALUES ($1, $2, 'integration-hash', 'Context Patient', 'active', now())`,
 			[]any{appUserID, "context-app-" + appUserID + "@example.com"}},
 		{`INSERT INTO organizations (id, name, kind) VALUES ($1, 'Context Test', 'solo')`, []any{organizationID}},
+		{`INSERT INTO subscriptions (organization_id, provider, plan, status)
+		  VALUES ($1, 'internal', 'single', 'trialing')`, []any{organizationID}},
 		{`INSERT INTO organization_memberships
 		  (id, organization_id, professional_user_id, role, status, joined_at)
 		  VALUES ($1, $2, $3, 'owner', 'active', $4)`, []any{membershipID, organizationID, professionalID, periodStart.Add(-time.Hour)}},
@@ -80,12 +82,14 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_item_sources WHERE chat_message_id = $1`, messageID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_items WHERE context_summary_id IN (SELECT id FROM context_summaries WHERE connection_id = $1)`, connectionID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_summaries WHERE connection_id = $1`, connectionID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_report_requests WHERE connection_id = $1`, connectionID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM context_processing_jobs WHERE connection_id = $1`, connectionID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM chat_messages WHERE conversation_id = $1`, conversationID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM chat_conversations WHERE id = $1`, conversationID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM connection_consents WHERE connection_id = $1`, connectionID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM professional_patient_connections WHERE id = $1`, connectionID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM organization_memberships WHERE id = $1`, membershipID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM subscriptions WHERE organization_id = $1`, organizationID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM organizations WHERE id = $1`, organizationID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM app_users WHERE id = $1`, appUserID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM professional_users WHERE id = $1`, professionalID)
@@ -100,10 +104,6 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	if err != nil || len(messages) != 1 || messages[0].ID != messageID {
 		t.Fatalf("LoadSourceMessages() = %#v, error = %v", messages, err)
 	}
-	jobID, err := repository.CreateJob(ctx, connectionID, professionalID, periodStart, periodEnd, now)
-	if err != nil {
-		t.Fatalf("CreateJob() error = %v", err)
-	}
 	service, err := NewService(repository, passthroughCipher{}, integrationCompanion{}, ServiceConfig{
 		ConsentPolicyVersion: "integration-v1",
 		WorkerLease:          time.Minute,
@@ -111,6 +111,28 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
+	}
+	reportRequest, err := service.CreateReportRequest(
+		ctx, professionalID, connectionID, periodStart, periodEnd,
+	)
+	if err != nil || reportRequest.Status != "pending" {
+		t.Fatalf("CreateReportRequest() = %#v, error = %v", reportRequest, err)
+	}
+	appRequests, err := service.ListReportRequestsForApp(ctx, appUserID, connectionID)
+	if err != nil || len(appRequests) != 1 || appRequests[0].ID != reportRequest.ID {
+		t.Fatalf("ListReportRequestsForApp() = %#v, error = %v", appRequests, err)
+	}
+	result, err := service.SendRequestedReport(ctx, appUserID, reportRequest.ID)
+	if err != nil || result.Status != "processing" {
+		t.Fatalf("SendRequestedReport() = %#v, error = %v", result, err)
+	}
+	var jobID string
+	if err := pool.QueryRow(ctx, `
+		SELECT processing_job_id::text
+		FROM context_report_requests
+		WHERE id = $1
+	`, reportRequest.ID).Scan(&jobID); err != nil {
+		t.Fatalf("query authorized job: %v", err)
 	}
 	processed, err := service.ProcessNext(ctx)
 	if err != nil || !processed {
@@ -120,18 +142,9 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	if err != nil || storedJob.Status != "completed" || storedJob.AttemptCount != 1 {
 		t.Fatalf("GetJob() = %#v, error = %v", storedJob, err)
 	}
-	pending, err := repository.ListSummariesForApp(ctx, appUserID, 10)
-	if err != nil || len(pending) != 1 || pending[0].ReviewStatus != "pending_review" {
-		t.Fatalf("ListSummariesForApp() = %#v, error = %v", pending, err)
-	}
-	timeline, err := repository.ListTimeline(ctx, pending[0].ID)
-	if err != nil || len(timeline) != 1 {
-		t.Fatalf("ListTimeline() = %#v, error = %v", timeline, err)
-	}
-	if err := repository.ReviewSummary(
-		ctx, appUserID, pending[0].ID, "approved", nil, []string{timeline[0].ID}, now,
-	); err != nil {
-		t.Fatalf("ReviewSummary() error = %v", err)
+	appRequests, err = service.ListReportRequestsForApp(ctx, appUserID, connectionID)
+	if err != nil || len(appRequests) != 1 || appRequests[0].Status != "sent" || appRequests[0].SentAt == nil {
+		t.Fatalf("completed ListReportRequestsForApp() = %#v, error = %v", appRequests, err)
 	}
 	summaries, err := repository.ListSummaries(ctx, connectionID, 10)
 	if err != nil || len(summaries) != 1 {
@@ -141,9 +154,9 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].Kind != "open_topic" {
 		t.Fatalf("ListItems() = %#v, error = %v", items, err)
 	}
-	timeline, err = repository.ListTimeline(ctx, summaries[0].ID)
-	if err != nil || len(timeline) != 0 {
-		t.Fatalf("excluded ListTimeline() = %#v, error = %v", timeline, err)
+	timeline, err := repository.ListTimeline(ctx, summaries[0].ID)
+	if err != nil || len(timeline) != 1 {
+		t.Fatalf("ListTimeline() = %#v, error = %v", timeline, err)
 	}
 }
 

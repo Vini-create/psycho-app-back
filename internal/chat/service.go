@@ -145,6 +145,32 @@ func (s *Service) ListConversations(
 	return conversations, nil
 }
 
+func (s *Service) RenameConversation(
+	ctx context.Context,
+	appUserID string,
+	conversationID string,
+	title string,
+) (Conversation, error) {
+	if _, err := uuid.Parse(conversationID); err != nil {
+		return Conversation{}, ErrInvalidInput
+	}
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" || utf8.RuneCountInString(title) > maxConversationTitleRunes {
+		return Conversation{}, ErrInvalidInput
+	}
+	titleCiphertext, err := s.cipher.Encrypt([]byte(title))
+	if err != nil {
+		return Conversation{}, fmt.Errorf("encrypt conversation title: %w", err)
+	}
+	stored, err := s.repository.RenameConversation(
+		ctx, appUserID, conversationID, titleCiphertext, s.now().UTC(),
+	)
+	if err != nil {
+		return Conversation{}, err
+	}
+	return s.conversationFromStored(stored)
+}
+
 func (s *Service) ArchiveConversation(
 	ctx context.Context,
 	appUserID string,

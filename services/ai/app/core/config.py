@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     report_extraction_concurrency: int = Field(default=4, ge=1, le=16)
 
     prompt_version: str = Field(default="companion-v1", min_length=1, max_length=100)
-    context_prompt_version: str = Field(default="journey-report-v1", min_length=1, max_length=100)
+    context_prompt_version: str = Field(default="journey-report-v2", min_length=1, max_length=100)
     conversation_graph_version: str = Field(default="conversation-graph-v1", max_length=100)
-    report_graph_version: str = Field(default="journey-report-graph-v1", max_length=100)
+    report_graph_version: str = Field(default="journey-report-graph-v2", max_length=100)
 
     @model_validator(mode="after")
     def validate_provider_credentials(self) -> "Settings":

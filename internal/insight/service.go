@@ -63,59 +63,100 @@ func NewService(
 	}, nil
 }
 
-func (s *Service) Generate(
+func (s *Service) CreateReportRequest(
 	ctx context.Context,
 	professionalUserID string,
 	connectionID string,
 	periodStart time.Time,
 	periodEnd time.Time,
-) (GenerationResult, error) {
+) (ReportRequest, error) {
 	if _, err := uuid.Parse(connectionID); err != nil {
-		return GenerationResult{}, ErrInvalidInput
+		return ReportRequest{}, ErrInvalidInput
 	}
 	periodStart = periodStart.UTC()
 	periodEnd = periodEnd.UTC()
 	now := s.now().UTC()
 	if periodStart.IsZero() || periodEnd.IsZero() || !periodEnd.After(periodStart) ||
 		periodEnd.Sub(periodStart) > 31*24*time.Hour || periodEnd.After(now.Add(time.Minute)) {
-		return GenerationResult{}, ErrInvalidInput
+		return ReportRequest{}, ErrInvalidInput
 	}
 
 	access, err := s.repository.ProfessionalConnectionAccess(
 		ctx, professionalUserID, connectionID, s.config.ConsentPolicyVersion,
 	)
 	if err != nil {
-		return GenerationResult{}, err
+		return ReportRequest{}, err
 	}
-	if !slices.Contains(access.Scopes, "summaries") {
-		return GenerationResult{}, ErrForbidden
+	if !slices.Contains(access.Scopes, "summaries") || periodStart.Before(access.ActivatedAt) {
+		return ReportRequest{}, ErrForbidden
 	}
-	if periodStart.Before(access.ActivatedAt) {
-		return GenerationResult{}, ErrForbidden
+	if access.SubscriptionStatus != "active" && access.SubscriptionStatus != "trialing" {
+		return ReportRequest{}, ErrSubscriptionRequired
 	}
 
-	jobID, err := s.repository.CreateJob(
+	stored, err := s.repository.CreateReportRequest(
 		ctx, connectionID, professionalUserID, periodStart, periodEnd, now,
 	)
 	if err != nil {
-		return GenerationResult{}, err
+		return ReportRequest{}, err
 	}
-	return GenerationResult{JobID: jobID, Status: "queued"}, nil
+	return reportRequestFromStored(stored), nil
 }
 
-func (s *Service) GetJob(
+func (s *Service) ListReportRequestsForProfessional(
 	ctx context.Context,
 	professionalUserID string,
-	jobID string,
-) (Job, error) {
-	if _, err := uuid.Parse(jobID); err != nil {
-		return Job{}, ErrInvalidInput
+	connectionID string,
+) ([]ReportRequest, error) {
+	if _, err := uuid.Parse(connectionID); err != nil {
+		return nil, ErrInvalidInput
 	}
-	stored, err := s.repository.GetJob(ctx, professionalUserID, jobID)
+	if _, err := s.repository.ProfessionalConnectionAccess(
+		ctx, professionalUserID, connectionID, s.config.ConsentPolicyVersion,
+	); err != nil {
+		return nil, err
+	}
+	stored, err := s.repository.ListReportRequestsForProfessional(
+		ctx, professionalUserID, connectionID, 50,
+	)
 	if err != nil {
-		return Job{}, err
+		return nil, err
 	}
-	return jobFromStored(stored), nil
+	return reportRequestsFromStored(stored), nil
+}
+
+func (s *Service) ListReportRequestsForApp(
+	ctx context.Context,
+	appUserID string,
+	connectionID string,
+) ([]ReportRequest, error) {
+	if _, err := uuid.Parse(connectionID); err != nil {
+		return nil, ErrInvalidInput
+	}
+	if err := s.repository.AppOwnsConnection(ctx, appUserID, connectionID); err != nil {
+		return nil, err
+	}
+	stored, err := s.repository.ListReportRequestsForApp(ctx, appUserID, connectionID, 50)
+	if err != nil {
+		return nil, err
+	}
+	return reportRequestsFromStored(stored), nil
+}
+
+func (s *Service) SendRequestedReport(
+	ctx context.Context,
+	appUserID string,
+	requestID string,
+) (SendReportResult, error) {
+	if _, err := uuid.Parse(requestID); err != nil {
+		return SendReportResult{}, ErrInvalidInput
+	}
+	if _, err := s.repository.AuthorizeReportRequest(
+		ctx, appUserID, requestID, s.config.ConsentPolicyVersion, s.now().UTC(),
+	); err != nil {
+		return SendReportResult{}, err
+	}
+	return SendReportResult{RequestID: requestID, Status: "processing"}, nil
 }
 
 func (s *Service) ProcessNext(ctx context.Context) (bool, error) {
@@ -141,6 +182,12 @@ func (s *Service) processJob(ctx context.Context, job storedJob) error {
 	}
 	if !slices.Contains(access.Scopes, "summaries") || job.PeriodStart.Before(access.ActivatedAt) {
 		if failErr := s.failJob(ctx, job.ID, "access_revoked"); failErr != nil {
+			return failErr
+		}
+		return nil
+	}
+	if access.SubscriptionStatus != "active" && access.SubscriptionStatus != "trialing" {
+		if failErr := s.failJob(ctx, job.ID, "subscription_inactive"); failErr != nil {
 			return failErr
 		}
 		return nil
@@ -250,7 +297,9 @@ func (s *Service) processJob(ctx context.Context, job storedJob) error {
 		title := strings.TrimSpace(input.Title)
 		description := strings.TrimSpace(input.Description)
 		impact := strings.TrimSpace(input.Impact)
+		emotionalValence := strings.TrimSpace(input.EmotionalValence)
 		if !validItemKind(input.Kind) || !validEvidenceStrength(input.EvidenceStrength) ||
+			!validEmotionalValence(input.Kind, emotionalValence) ||
 			utf8.RuneCountInString(title) < 1 || utf8.RuneCountInString(title) > 240 ||
 			utf8.RuneCountInString(description) < 1 || utf8.RuneCountInString(description) > 4000 ||
 			utf8.RuneCountInString(impact) > 2000 || len(input.Limitations) > 10 ||
@@ -278,7 +327,8 @@ func (s *Service) processJob(ctx context.Context, job storedJob) error {
 		items = append(items, itemWrite{
 			Kind: input.Kind, TitleCiphertext: titleCiphertext,
 			DescriptionCiphertext: descriptionCiphertext, ImpactCiphertext: impactCiphertext,
-			EvidenceStrength: input.EvidenceStrength, OccurredAt: input.OccurredAt,
+			EvidenceStrength: input.EvidenceStrength, EmotionalValence: emotionalValence,
+			OccurredAt:            input.OccurredAt,
 			LimitationsCiphertext: itemLimitationsCiphertext,
 			SourceMessageIDs:      input.SourceMessageIDs,
 		})
@@ -336,62 +386,6 @@ func (s *Service) List(
 		summaries = append(summaries, summary)
 	}
 	return summaries, nil
-}
-
-func (s *Service) ListForApp(ctx context.Context, appUserID string) ([]Summary, error) {
-	storedSummaries, err := s.repository.ListSummariesForApp(ctx, appUserID, 50)
-	if err != nil {
-		return nil, err
-	}
-	summaries := make([]Summary, 0, len(storedSummaries))
-	for _, stored := range storedSummaries {
-		summary, err := s.summaryFromStored(ctx, stored, []string{"summaries"})
-		if err != nil {
-			return nil, err
-		}
-		summaries = append(summaries, summary)
-	}
-	return summaries, nil
-}
-
-func (s *Service) Review(
-	ctx context.Context,
-	appUserID string,
-	summaryID string,
-	decision string,
-	excludedItemIDs []string,
-	excludedTimelineEntryIDs []string,
-) error {
-	if _, err := uuid.Parse(summaryID); err != nil ||
-		(decision != "approved" && decision != "rejected") ||
-		len(excludedItemIDs) > 100 || len(excludedTimelineEntryIDs) > 100 ||
-		(decision == "rejected" && (len(excludedItemIDs) > 0 || len(excludedTimelineEntryIDs) > 0)) {
-		return ErrInvalidInput
-	}
-	seen := make(map[string]struct{}, len(excludedItemIDs))
-	for _, itemID := range excludedItemIDs {
-		if _, err := uuid.Parse(itemID); err != nil {
-			return ErrInvalidInput
-		}
-		if _, exists := seen[itemID]; exists {
-			return ErrInvalidInput
-		}
-		seen[itemID] = struct{}{}
-	}
-	seenTimeline := make(map[string]struct{}, len(excludedTimelineEntryIDs))
-	for _, entryID := range excludedTimelineEntryIDs {
-		if _, err := uuid.Parse(entryID); err != nil {
-			return ErrInvalidInput
-		}
-		if _, exists := seenTimeline[entryID]; exists {
-			return ErrInvalidInput
-		}
-		seenTimeline[entryID] = struct{}{}
-	}
-	return s.repository.ReviewSummary(
-		ctx, appUserID, summaryID, decision, excludedItemIDs,
-		excludedTimelineEntryIDs, s.now().UTC(),
-	)
 }
 
 func (s *Service) summaryFromStored(
@@ -461,6 +455,7 @@ func (s *Service) summaryFromStored(
 			ID: storedItem.ID, Kind: storedItem.Kind, Title: string(title),
 			Description: string(description), Impact: impact,
 			EvidenceStrength: storedItem.EvidenceStrength,
+			EmotionalValence: storedItem.EmotionalValence,
 			OccurredAt:       storedItem.OccurredAt, Limitations: itemLimitations,
 			Included: storedItem.Included,
 		})
@@ -502,14 +497,22 @@ func (s *Service) retryOrFail(ctx context.Context, job storedJob, failureCode st
 	)
 }
 
-func jobFromStored(stored storedJob) Job {
-	return Job{
+func reportRequestFromStored(stored storedReportRequest) ReportRequest {
+	return ReportRequest{
 		ID: stored.ID, ConnectionID: stored.ConnectionID,
-		PeriodStart: stored.PeriodStart, PeriodEnd: stored.PeriodEnd,
-		Status: stored.Status, AttemptCount: stored.AttemptCount,
-		CompletedAt: stored.CompletedAt, CreatedAt: stored.CreatedAt,
-		UpdatedAt: stored.UpdatedAt,
+		ProfessionalDisplayName: stored.ProfessionalDisplayName,
+		PatientDisplayName:      stored.PatientDisplayName,
+		PeriodStart:             stored.PeriodStart, PeriodEnd: stored.PeriodEnd,
+		Status: stored.Status, RequestedAt: stored.RequestedAt, SentAt: stored.SentAt,
 	}
+}
+
+func reportRequestsFromStored(stored []storedReportRequest) []ReportRequest {
+	requests := make([]ReportRequest, 0, len(stored))
+	for _, request := range stored {
+		requests = append(requests, reportRequestFromStored(request))
+	}
+	return requests
 }
 
 func validItemKind(kind string) bool {
@@ -526,6 +529,14 @@ func scopeAllowsItem(scopes []string, kind string) bool {
 func validEvidenceStrength(value string) bool {
 	return value == "explicit_once" || value == "explicit_repeated" ||
 		value == "uncertain" || value == "contradictory"
+}
+
+func validEmotionalValence(kind string, value string) bool {
+	if kind != "emotion" {
+		return value == ""
+	}
+	return value == "pleasant" || value == "unpleasant" ||
+		value == "mixed" || value == "neutral"
 }
 
 func validCompleteness(value string) bool {
