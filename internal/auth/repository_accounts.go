@@ -18,6 +18,7 @@ func (r *Repository) CreateAccount(
 	displayName string,
 	verificationTokenHash string,
 	verificationExpiresAt time.Time,
+	emailMessage EmailOutboxMessage,
 	client ClientInfo,
 ) (string, error) {
 	table, identityColumn, err := accountTable(audience)
@@ -70,6 +71,9 @@ func (r *Repository) CreateAccount(
 		verificationExpiresAt,
 	); err != nil {
 		return "", fmt.Errorf("insert verification token: %w", err)
+	}
+	if err := insertEmailOutbox(ctx, tx, audience, emailMessage); err != nil {
+		return "", err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -156,6 +160,7 @@ func (r *Repository) ReplaceOneTimeTokenByEmail(
 	purpose string,
 	tokenHash string,
 	expiresAt time.Time,
+	emailMessage EmailOutboxMessage,
 	client ClientInfo,
 ) (bool, error) {
 	table, identityColumn, err := accountTable(audience)
@@ -172,11 +177,16 @@ func (r *Repository) ReplaceOneTimeTokenByEmail(
 	findQuery := fmt.Sprintf(`
 		SELECT id::text
 		FROM %s
-		WHERE email = $1 AND deleted_at IS NULL
+		WHERE email = $1
+		  AND deleted_at IS NULL
+		  AND (
+			($2 = 'email_verification' AND status = 'pending_verification')
+			OR ($2 = 'password_reset' AND status = 'active')
+		  )
 	`, table)
 
 	var accountID string
-	if err := tx.QueryRow(ctx, findQuery, email).Scan(&accountID); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, findQuery, email, purpose).Scan(&accountID); errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	} else if err != nil {
 		return false, fmt.Errorf("find account for one-time token: %w", err)
@@ -221,12 +231,39 @@ func (r *Repository) ReplaceOneTimeTokenByEmail(
 	); err != nil {
 		return false, fmt.Errorf("insert one-time token: %w", err)
 	}
+	if err := insertEmailOutbox(ctx, tx, audience, emailMessage); err != nil {
+		return false, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit one-time token transaction: %w", err)
 	}
 
 	return true, nil
+}
+
+type emailOutboxExecutor interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func insertEmailOutbox(
+	ctx context.Context,
+	executor emailOutboxExecutor,
+	audience Audience,
+	message EmailOutboxMessage,
+) error {
+	if message.Kind == "" || message.RecipientEmail == "" || len(message.TokenCiphertext) == 0 {
+		return fmt.Errorf("email outbox message is required")
+	}
+	if _, err := executor.Exec(ctx, `
+		INSERT INTO auth_email_outbox (
+			audience, kind, recipient_email, token_ciphertext
+		)
+		VALUES ($1, $2, $3, $4)
+	`, audience, message.Kind, message.RecipientEmail, message.TokenCiphertext); err != nil {
+		return fmt.Errorf("insert email outbox message: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) CreateOneTimeTokenForAccount(

@@ -17,6 +17,7 @@ type ServiceConfig struct {
 	RefreshTokenTTL           time.Duration
 	EmailVerificationTokenTTL time.Duration
 	PasswordResetTokenTTL     time.Duration
+	GoogleChallengeTTL        time.Duration
 	ExposeDevelopmentTokens   bool
 }
 
@@ -25,6 +26,8 @@ type Service struct {
 	passwords         PasswordHasher
 	accessTokens      *AccessTokenManager
 	passkeys          *PasskeyManager
+	cipher            *SecretCipher
+	google            GoogleTokenVerifier
 	config            ServiceConfig
 	dummyPasswordHash string
 	now               func() time.Time
@@ -34,14 +37,17 @@ func NewService(
 	repository *Repository,
 	accessTokens *AccessTokenManager,
 	passkeys *PasskeyManager,
+	cipher *SecretCipher,
+	google GoogleTokenVerifier,
 	config ServiceConfig,
 ) (*Service, error) {
-	if repository == nil || accessTokens == nil || passkeys == nil {
+	if repository == nil || accessTokens == nil || passkeys == nil || cipher == nil || google == nil {
 		return nil, fmt.Errorf("auth service dependencies are required")
 	}
 	if config.RefreshTokenTTL <= 0 ||
 		config.EmailVerificationTokenTTL <= 0 ||
-		config.PasswordResetTokenTTL <= 0 {
+		config.PasswordResetTokenTTL <= 0 ||
+		config.GoogleChallengeTTL <= 0 {
 		return nil, fmt.Errorf("auth token TTLs must be greater than zero")
 	}
 
@@ -56,6 +62,8 @@ func NewService(
 		passwords:         passwords,
 		accessTokens:      accessTokens,
 		passkeys:          passkeys,
+		cipher:            cipher,
+		google:            google,
 		config:            config,
 		dummyPasswordHash: dummyPasswordHash,
 		now:               time.Now,
@@ -95,6 +103,10 @@ func (s *Service) Register(
 	}
 
 	now := s.now().UTC()
+	tokenCiphertext, err := s.cipher.Encrypt([]byte(rawVerificationToken))
+	if err != nil {
+		return RegisterResult{}, fmt.Errorf("encrypt verification token: %w", err)
+	}
 	accountID, err := s.repository.CreateAccount(
 		ctx,
 		audience,
@@ -103,6 +115,10 @@ func (s *Service) Register(
 		displayName,
 		hashToken(rawVerificationToken),
 		now.Add(s.config.EmailVerificationTokenTTL),
+		EmailOutboxMessage{
+			Kind: "email_verification", RecipientEmail: email,
+			TokenCiphertext: tokenCiphertext,
+		},
 		client,
 	)
 	if err != nil {
@@ -161,6 +177,16 @@ func (s *Service) Login(
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
+	return s.completePrimaryLogin(ctx, audience, account, "login", client)
+}
+
+func (s *Service) completePrimaryLogin(
+	ctx context.Context,
+	audience Audience,
+	account Account,
+	eventType string,
+	client ClientInfo,
+) (LoginResult, error) {
 	if account.Status == "pending_verification" || account.EmailVerifiedAt == nil {
 		return LoginResult{}, ErrEmailNotVerified
 	}
@@ -178,11 +204,7 @@ func (s *Service) Login(
 			if err != nil {
 				return LoginResult{}, err
 			}
-
-			return LoginResult{
-				PasskeyRequired: true,
-				PasskeyCeremony: &ceremony,
-			}, nil
+			return LoginResult{PasskeyRequired: true, PasskeyCeremony: &ceremony}, nil
 		}
 	}
 
@@ -190,15 +212,10 @@ func (s *Service) Login(
 	if err != nil {
 		return LoginResult{}, err
 	}
-
 	s.recordEvent(ctx, Event{
-		Audience:  audience,
-		AccountID: account.ID,
-		Type:      "login",
-		Outcome:   "success",
-		Client:    client,
+		Audience: audience, AccountID: account.ID, Type: eventType,
+		Outcome: "success", Client: client,
 	})
-
 	return LoginResult{
 		Tokens:                  &tokens,
 		PasskeyEnrollmentNeeded: audience == AudienceProfessional,
@@ -675,6 +692,10 @@ func (s *Service) requestOneTimeToken(
 	if err != nil {
 		return OneTimeTokenResult{}, err
 	}
+	tokenCiphertext, err := s.cipher.Encrypt([]byte(rawToken))
+	if err != nil {
+		return OneTimeTokenResult{}, fmt.Errorf("encrypt one-time token: %w", err)
+	}
 	created, err := s.repository.ReplaceOneTimeTokenByEmail(
 		ctx,
 		audience,
@@ -682,6 +703,9 @@ func (s *Service) requestOneTimeToken(
 		purpose,
 		hashToken(rawToken),
 		s.now().UTC().Add(ttl),
+		EmailOutboxMessage{
+			Kind: purpose, RecipientEmail: email, TokenCiphertext: tokenCiphertext,
+		},
 		client,
 	)
 	if err != nil {

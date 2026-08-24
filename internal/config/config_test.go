@@ -24,3 +24,15 @@ func TestRequireHTTPSOrigins(t *testing.T) {
 		})
 	}
 }
+
+func TestApplicationURLFromEnv(t *testing.T) {
+	t.Setenv("TEST_APP_URL", "https://app.example.com/")
+	got, err := applicationURLFromEnv("TEST_APP_URL", "production")
+	if err != nil || got != "https://app.example.com" {
+		t.Fatalf("applicationURLFromEnv() = %q, %v", got, err)
+	}
+	t.Setenv("TEST_APP_URL", "http://app.example.com")
+	if _, err := applicationURLFromEnv("TEST_APP_URL", "production"); err == nil {
+		t.Fatal("applicationURLFromEnv() expected HTTPS error")
+	}
+}

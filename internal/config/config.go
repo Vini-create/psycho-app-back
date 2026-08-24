@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net/mail"
 	"net/url"
 	"os"
 	"strconv"
@@ -15,6 +16,7 @@ type Config struct {
 	HTTP      HTTPConfig
 	Database  DatabaseConfig
 	Auth      AuthConfig
+	Email     EmailConfig
 	Companion CompanionConfig
 }
 
@@ -26,6 +28,8 @@ type AuthConfig struct {
 	RefreshTokenTTL           time.Duration
 	EmailVerificationTokenTTL time.Duration
 	PasswordResetTokenTTL     time.Duration
+	GoogleClientID            string
+	GoogleChallengeTTL        time.Duration
 	CookieSecure              bool
 	AllowedOrigins            []string
 	ExposeDevelopmentTokens   bool
@@ -33,6 +37,21 @@ type AuthConfig struct {
 	WebAuthnRPDisplayName     string
 	WebAuthnOrigins           []string
 	WebAuthnCeremonyTTL       time.Duration
+}
+
+type EmailConfig struct {
+	Provider           string
+	BrevoAPIKey        string
+	FromName           string
+	FromAddress        string
+	PatientAppURL      string
+	ProfessionalAppURL string
+	Timeout            time.Duration
+	WorkerEnabled      bool
+	WorkerConcurrency  int
+	WorkerPoll         time.Duration
+	WorkerLease        time.Duration
+	WorkerMaxAttempts  int
 }
 
 type DatabaseConfig struct {
@@ -147,6 +166,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	emailConfig, err := loadEmailConfig(environment)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		App: AppConfig{
@@ -168,10 +191,99 @@ func Load() (Config, error) {
 			ConnectTimeout: databaseConnectTimeout,
 		},
 		Auth:      authConfig,
+		Email:     emailConfig,
 		Companion: companionConfig,
 	}
 
 	return cfg, nil
+}
+
+func loadEmailConfig(environment string) (EmailConfig, error) {
+	provider, err := stringFromEnv("EMAIL_PROVIDER")
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != "mock" && provider != "brevo" {
+		return EmailConfig{}, fmt.Errorf("EMAIL_PROVIDER must be mock or brevo")
+	}
+	if provider == "mock" && environment != "development" {
+		return EmailConfig{}, fmt.Errorf("EMAIL_PROVIDER=mock can only be used in development")
+	}
+
+	fromName, err := stringFromEnv("EMAIL_FROM_NAME")
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	fromAddress, err := stringFromEnv("EMAIL_FROM_ADDRESS")
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	if _, err := mail.ParseAddress(fromAddress); err != nil {
+		return EmailConfig{}, fmt.Errorf("EMAIL_FROM_ADDRESS must be a valid email address")
+	}
+	patientURL, err := applicationURLFromEnv("EMAIL_PATIENT_APP_URL", environment)
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	professionalURL, err := applicationURLFromEnv("EMAIL_PROFESSIONAL_APP_URL", environment)
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	timeout, err := durationFromEnv("EMAIL_TIMEOUT")
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	workerEnabled, err := boolFromEnv("EMAIL_WORKER_ENABLED")
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	if !workerEnabled && environment != "development" {
+		return EmailConfig{}, fmt.Errorf("EMAIL_WORKER_ENABLED must be true outside development")
+	}
+	workerConcurrency, err := intFromEnv("EMAIL_WORKER_CONCURRENCY", 1, 16)
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	workerPoll, err := durationFromEnv("EMAIL_WORKER_POLL_INTERVAL")
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	workerLease, err := durationFromEnv("EMAIL_WORKER_LEASE")
+	if err != nil {
+		return EmailConfig{}, err
+	}
+	workerMaxAttempts, err := intFromEnv("EMAIL_WORKER_MAX_ATTEMPTS", 1, 10)
+	if err != nil {
+		return EmailConfig{}, err
+	}
+
+	apiKey := strings.TrimSpace(os.Getenv("EMAIL_BREVO_API_KEY"))
+	if provider == "brevo" && apiKey == "" {
+		return EmailConfig{}, fmt.Errorf("EMAIL_BREVO_API_KEY is required when EMAIL_PROVIDER=brevo")
+	}
+	return EmailConfig{
+		Provider: provider, BrevoAPIKey: apiKey, FromName: fromName, FromAddress: fromAddress,
+		PatientAppURL: patientURL, ProfessionalAppURL: professionalURL, Timeout: timeout,
+		WorkerEnabled: workerEnabled, WorkerConcurrency: workerConcurrency,
+		WorkerPoll: workerPoll, WorkerLease: workerLease, WorkerMaxAttempts: workerMaxAttempts,
+	}, nil
+}
+
+func applicationURLFromEnv(key, environment string) (string, error) {
+	value, err := stringFromEnv(key)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("%s must be an absolute HTTP(S) URL", key)
+	}
+	if environment != "development" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("%s must use HTTPS outside development", key)
+	}
+	return strings.TrimRight(value, "/"), nil
 }
 
 func loadCompanionConfig(environment string) (CompanionConfig, error) {
@@ -271,6 +383,14 @@ func loadAuthConfig(environment string) (AuthConfig, error) {
 	if err != nil {
 		return AuthConfig{}, err
 	}
+	googleChallengeTTL, err := durationFromEnv("AUTH_GOOGLE_CHALLENGE_TTL")
+	if err != nil {
+		return AuthConfig{}, err
+	}
+	googleClientID := strings.TrimSpace(os.Getenv("AUTH_GOOGLE_CLIENT_ID"))
+	if environment != "development" && googleClientID == "" {
+		return AuthConfig{}, fmt.Errorf("AUTH_GOOGLE_CLIENT_ID is required outside development")
+	}
 
 	cookieSecure, err := boolFromEnv("AUTH_COOKIE_SECURE")
 	if err != nil {
@@ -333,6 +453,8 @@ func loadAuthConfig(environment string) (AuthConfig, error) {
 		RefreshTokenTTL:           refreshTokenTTL,
 		EmailVerificationTokenTTL: emailVerificationTokenTTL,
 		PasswordResetTokenTTL:     passwordResetTokenTTL,
+		GoogleClientID:            googleClientID,
+		GoogleChallengeTTL:        googleChallengeTTL,
 		CookieSecure:              cookieSecure,
 		AllowedOrigins:            allowedOrigins,
 		ExposeDevelopmentTokens:   exposeDevelopmentTokens,

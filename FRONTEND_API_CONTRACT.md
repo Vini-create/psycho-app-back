@@ -1,6 +1,6 @@
 # Contrato backend → frontend
 
-Atualizado em: 2026-08-21
+Atualizado em: 2026-08-24
 Versão da API: `v1`
 Status: autenticação, conversas com IA, renomeação/exclusão de conversa, vínculo profissional–paciente e fluxo autorizado de Relatórios de Contexto e Jornada implementados.
 
@@ -170,6 +170,32 @@ Para `app`, resposta `200`:
 ```
 
 Para `professional`, a resposta é uma união de estados descrita na seção de passkeys.
+
+### Login com Google
+
+Primeiro crie um nonce de uso único com `POST /v1/{audience}/auth/google/challenge`.
+
+```json
+{
+  "challenge_id": "uuid",
+  "nonce": "nonce-para-o-Google-Identity-Services",
+  "expires_at": "2026-08-24T15:05:00Z"
+}
+```
+
+Passe o `nonce` ao Google Identity Services e envie o ID token retornado para
+`POST /v1/{audience}/auth/google`:
+
+```json
+{
+  "challenge_id": "uuid",
+  "credential": "id-token-assinado-pelo-google"
+}
+```
+
+A resposta `200` tem a mesma união do login com senha. Para profissionais, uma
+passkey já cadastrada continua obrigatória. O backend valida assinatura, `aud`,
+`iss`, expiração, e-mail verificado e nonce; a identidade persistida usa o `sub`.
 
 ### Refresh
 

@@ -78,6 +78,12 @@ type OneTimeTokenResult struct {
 	DevelopmentToken string `json:"development_token,omitempty"`
 }
 
+type EmailOutboxMessage struct {
+	Kind            string
+	RecipientEmail  string
+	TokenCiphertext []byte
+}
+
 type RecoveryCodesResult struct {
 	RecoveryCodes []string `json:"recovery_codes"`
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/Vini-create/psycho-app-back/internal/chat"
 	"github.com/Vini-create/psycho-app-back/internal/companion"
 	"github.com/Vini-create/psycho-app-back/internal/config"
+	appemail "github.com/Vini-create/psycho-app-back/internal/email"
 	"github.com/Vini-create/psycho-app-back/internal/httpapi"
 	"github.com/Vini-create/psycho-app-back/internal/insight"
 	"github.com/Vini-create/psycho-app-back/internal/platform/postgres"
@@ -73,6 +74,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create auth secret cipher: %w", err)
 	}
+	var googleVerifier auth.GoogleTokenVerifier = auth.DisabledGoogleVerifier{}
+	if cfg.Auth.GoogleClientID != "" {
+		googleVerifier, err = auth.NewGoogleIDTokenVerifier(cfg.Auth.GoogleClientID)
+		if err != nil {
+			return fmt.Errorf("create Google token verifier: %w", err)
+		}
+	}
 
 	authRepository := auth.NewRepository(databasePool)
 	passkeyManager, err := auth.NewPasskeyManager(
@@ -93,10 +101,13 @@ func run() error {
 		authRepository,
 		accessTokenManager,
 		passkeyManager,
+		secretCipher,
+		googleVerifier,
 		auth.ServiceConfig{
 			RefreshTokenTTL:           cfg.Auth.RefreshTokenTTL,
 			EmailVerificationTokenTTL: cfg.Auth.EmailVerificationTokenTTL,
 			PasswordResetTokenTTL:     cfg.Auth.PasswordResetTokenTTL,
+			GoogleChallengeTTL:        cfg.Auth.GoogleChallengeTTL,
 			ExposeDevelopmentTokens:   cfg.Auth.ExposeDevelopmentTokens,
 		},
 	)
@@ -167,6 +178,55 @@ func run() error {
 		return fmt.Errorf("create insight service: %w", err)
 	}
 	insightHandler := httpapi.NewInsightHandler(insightService)
+
+	var emailSender appemail.Sender = appemail.MockSender{}
+	if cfg.Email.Provider == "brevo" {
+		brevoSender, err := appemail.NewBrevoSender(
+			cfg.Email.BrevoAPIKey,
+			cfg.Email.FromName,
+			cfg.Email.FromAddress,
+			cfg.Email.Timeout,
+		)
+		if err != nil {
+			return fmt.Errorf("create Brevo sender: %w", err)
+		}
+		emailSender = brevoSender
+	}
+	emailService, err := appemail.NewService(
+		appemail.NewRepository(databasePool),
+		emailSender,
+		secretCipher,
+		appemail.ServiceConfig{
+			PatientAppURL:      cfg.Email.PatientAppURL,
+			ProfessionalAppURL: cfg.Email.ProfessionalAppURL,
+			Lease:              cfg.Email.WorkerLease,
+			MaxAttempts:        cfg.Email.WorkerMaxAttempts,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create email service: %w", err)
+	}
+	var emailWorkerDone chan struct{}
+	if cfg.Email.WorkerEnabled {
+		emailWorker, err := appemail.NewWorker(emailService, appemail.WorkerConfig{
+			Concurrency:  cfg.Email.WorkerConcurrency,
+			PollInterval: cfg.Email.WorkerPoll,
+		})
+		if err != nil {
+			return fmt.Errorf("create email worker: %w", err)
+		}
+		emailWorkerDone = make(chan struct{})
+		go func() {
+			defer close(emailWorkerDone)
+			emailWorker.Run(signalCtx)
+		}()
+		slog.Info(
+			"email workers started",
+			"provider", cfg.Email.Provider,
+			"concurrency", cfg.Email.WorkerConcurrency,
+		)
+	}
+
 	var contextWorkerDone chan struct{}
 	if cfg.Companion.ContextWorkerEnabled {
 		contextWorker, err := insight.NewWorker(insightService, insight.WorkerConfig{
@@ -241,6 +301,13 @@ func run() error {
 		case <-contextWorkerDone:
 		case <-shutdownCtx.Done():
 			return fmt.Errorf("wait for context workers: %w", shutdownCtx.Err())
+		}
+	}
+	if emailWorkerDone != nil {
+		select {
+		case <-emailWorkerDone:
+		case <-shutdownCtx.Done():
+			return fmt.Errorf("wait for email workers: %w", shutdownCtx.Err())
 		}
 	}
 

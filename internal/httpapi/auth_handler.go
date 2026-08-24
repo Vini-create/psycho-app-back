@@ -55,6 +55,8 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, audience auth.Audience)
 
 	mux.HandleFunc("POST "+authPrefix+"/register", h.register(audience))
 	mux.HandleFunc("POST "+authPrefix+"/login", h.login(audience))
+	mux.HandleFunc("POST "+authPrefix+"/google/challenge", h.googleChallenge(audience))
+	mux.HandleFunc("POST "+authPrefix+"/google", h.googleLogin(audience))
 	mux.HandleFunc("POST "+authPrefix+"/refresh", h.refresh(audience))
 	mux.HandleFunc("POST "+authPrefix+"/logout", h.requireAuth(audience, h.logout(audience)))
 	mux.HandleFunc("POST "+authPrefix+"/logout-all", h.requireAuth(audience, h.logoutAll(audience)))
@@ -151,6 +153,48 @@ func (h *AuthHandler) login(audience auth.Audience) http.HandlerFunc {
 			return
 		}
 
+		if result.Tokens != nil {
+			h.setRefreshCookie(w, audience, result.Tokens.RefreshToken)
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func (h *AuthHandler) googleChallenge(audience auth.Audience) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		challenge, err := h.service.BeginGoogleLogin(r.Context(), audience, clientInfo(r))
+		if err != nil {
+			h.handleServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, challenge)
+	}
+}
+
+func (h *AuthHandler) googleLogin(audience auth.Audience) http.HandlerFunc {
+	type request struct {
+		ChallengeID string `json:"challenge_id"`
+		Credential  string `json:"credential"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body request
+		if err := readJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+			return
+		}
+		if !h.loginAllowed(r, audience, "google:"+body.ChallengeID) {
+			w.Header().Set("Retry-After", "60")
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
+			return
+		}
+		result, err := h.service.LoginWithGoogle(
+			r.Context(), audience, body.ChallengeID, body.Credential, clientInfo(r),
+		)
+		if err != nil {
+			h.handleServiceError(w, err)
+			return
+		}
 		if result.Tokens != nil {
 			h.setRefreshCookie(w, audience, result.Tokens.RefreshToken)
 		}
@@ -482,6 +526,12 @@ func (h *AuthHandler) handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "passkey_limit", "the account reached the passkey limit")
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "email or password is incorrect")
+	case errors.Is(err, auth.ErrInvalidGoogleCredential):
+		writeError(w, http.StatusUnauthorized, "invalid_google_credential", "Google authentication is invalid or expired")
+	case errors.Is(err, auth.ErrGoogleNotConfigured):
+		writeError(w, http.StatusServiceUnavailable, "google_not_configured", "Google authentication is unavailable")
+	case errors.Is(err, auth.ErrGoogleLinkRequired):
+		writeError(w, http.StatusConflict, "google_link_required", "this account must use email and password")
 	case errors.Is(err, auth.ErrEmailNotVerified):
 		writeError(w, http.StatusForbidden, "email_not_verified", "email verification is required")
 	case errors.Is(err, auth.ErrAccountUnavailable):
