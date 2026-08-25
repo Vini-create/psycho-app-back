@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     report_chunk_characters: int = Field(default=40_000, ge=5_000, le=100_000)
     report_extraction_concurrency: int = Field(default=4, ge=1, le=16)
 
-    prompt_version: str = Field(default="companion-v1", min_length=1, max_length=100)
+    prompt_version: str = Field(default="companion-v2", min_length=1, max_length=100)
     context_prompt_version: str = Field(default="journey-report-v2", min_length=1, max_length=100)
     conversation_graph_version: str = Field(default="conversation-graph-v1", max_length=100)
     report_graph_version: str = Field(default="journey-report-graph-v2", max_length=100)

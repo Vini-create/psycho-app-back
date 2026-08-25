@@ -41,7 +41,7 @@ Resposta `200`:
   "content": "Resposta natural e segura.",
   "provider": "openai",
   "model": "gpt-5.6-terra",
-  "prompt_version": "companion-v1",
+  "prompt_version": "companion-v2",
   "blocked": false,
   "block_reason": null,
   "language": "pt-BR",

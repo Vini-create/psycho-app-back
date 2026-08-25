@@ -47,7 +47,7 @@ services:
       AI_AUXILIARY_MODEL: ${AI_AUXILIARY_MODEL:-gpt-5.6-luna}
       AI_REPORT_MODEL: ${AI_REPORT_MODEL:-gpt-5.6-terra}
       AI_MODERATION_MODEL: ${AI_MODERATION_MODEL:-omni-moderation-latest}
-      AI_PROMPT_VERSION: companion-v1
+      AI_PROMPT_VERSION: companion-v2
       AI_CONTEXT_PROMPT_VERSION: journey-report-v2
     ports:
       - "127.0.0.1:8000:8000"

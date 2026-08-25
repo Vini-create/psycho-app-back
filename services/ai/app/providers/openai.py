@@ -15,7 +15,7 @@ from app.domain.models import (
     ReportGenerationInput,
     SafetyDecision,
 )
-from app.prompts.companion_v1 import SAFETY_PROMPT, SECURITY_PROMPT, SYSTEM_PROMPT
+from app.prompts.companion_v2 import SAFETY_PROMPT, SECURITY_PROMPT, SYSTEM_PROMPT
 from app.prompts.context_v2 import FACT_EXTRACTION_PROMPT
 from app.prompts.context_v2 import SYSTEM_PROMPT as REPORT_SYSTEM_PROMPT
 
