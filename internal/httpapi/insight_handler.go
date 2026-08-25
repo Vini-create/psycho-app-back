@@ -130,6 +130,8 @@ func (h *InsightHandler) handleError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "context_request_resolved", "this report request was already answered")
 	case errors.Is(err, insight.ErrSubscriptionRequired):
 		writeError(w, http.StatusPaymentRequired, "subscription_required", "an active professional subscription is required")
+	case errors.Is(err, insight.ErrProfileIncomplete):
+		writeError(w, http.StatusConflict, "profile_incomplete", "professional profile must be completed first")
 	case errors.Is(err, insight.ErrNoMessages):
 		writeError(w, http.StatusUnprocessableEntity, "context_no_messages", "the selected period has no eligible messages")
 	case errors.Is(err, insight.ErrPeriodTooLarge):

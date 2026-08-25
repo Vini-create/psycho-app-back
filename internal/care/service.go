@@ -241,7 +241,8 @@ func normalizeProfessionalProfile(input ProfessionalProfileInput) (ProfessionalP
 	input.RegistrationRegion = strings.TrimSpace(input.RegistrationRegion)
 	input.RegistrationNumber = strings.TrimSpace(input.RegistrationNumber)
 	input.Bio = strings.TrimSpace(input.Bio)
-	if input.RegistrationCountryCode != "" && len(input.RegistrationCountryCode) != 2 {
+	if len(input.RegistrationCountryCode) != 2 || input.RegistrationRegion == "" ||
+		input.RegistrationNumber == "" {
 		return ProfessionalProfileInput{}, ErrInvalidInput
 	}
 	if utf8.RuneCountInString(input.RegistrationRegion) > 100 ||

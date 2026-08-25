@@ -16,6 +16,7 @@ var (
 	ErrForbidden               = errors.New("operation is forbidden")
 	ErrNotFound                = errors.New("resource not found")
 	ErrWeakPassword            = errors.New("password does not meet security requirements")
+	ErrPasswordUnchanged       = errors.New("new password must be different from current password")
 	ErrInvalidInput            = errors.New("invalid input")
 	ErrInvalidGoogleCredential = errors.New("invalid Google credential")
 	ErrGoogleNotConfigured     = errors.New("Google login is not configured")

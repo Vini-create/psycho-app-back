@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -165,7 +166,10 @@ func (r *Repository) GetProfessionalProfile(
 	if err != nil {
 		return ProfessionalProfile{}, fmt.Errorf("get professional profile: %w", err)
 	}
-	profile.OnboardingComplete = true
+	profile.OnboardingComplete = profile.RegistrationCountryCode != nil &&
+		len(strings.TrimSpace(*profile.RegistrationCountryCode)) == 2 &&
+		profile.RegistrationRegion != nil && strings.TrimSpace(*profile.RegistrationRegion) != "" &&
+		profile.RegistrationNumber != nil && strings.TrimSpace(*profile.RegistrationNumber) != ""
 	return profile, nil
 }
 

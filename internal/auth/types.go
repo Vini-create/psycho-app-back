@@ -20,6 +20,10 @@ type Account struct {
 	DisplayName     string
 	Status          string
 	EmailVerifiedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Plan            string
+	GoogleConnected bool
 }
 
 type Principal struct {

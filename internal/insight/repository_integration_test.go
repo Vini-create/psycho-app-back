@@ -2,6 +2,7 @@ package insight
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -91,13 +92,14 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM organization_memberships WHERE id = $1`, membershipID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM subscriptions WHERE organization_id = $1`, organizationID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM organizations WHERE id = $1`, organizationID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM professional_profiles WHERE professional_user_id = $1`, professionalID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM app_users WHERE id = $1`, appUserID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM professional_users WHERE id = $1`, professionalID)
 	})
 
 	repository := NewRepository(pool)
 	access, err := repository.ProfessionalConnectionAccess(ctx, professionalID, connectionID, "integration-v1")
-	if err != nil || access.AppUserID != appUserID || len(access.Scopes) != 2 {
+	if err != nil || access.AppUserID != appUserID || len(access.Scopes) != 2 || access.ProfileComplete {
 		t.Fatalf("ProfessionalConnectionAccess() = %#v, error = %v", access, err)
 	}
 	messages, err := repository.LoadSourceMessages(ctx, appUserID, periodStart, periodEnd, 10)
@@ -111,6 +113,19 @@ func TestRepositoryContextLifecycle(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
+	}
+	if _, err := service.CreateReportRequest(
+		ctx, professionalID, connectionID, periodStart, periodEnd,
+	); !errors.Is(err, ErrProfileIncomplete) {
+		t.Fatalf("CreateReportRequest() incomplete profile error = %v, want ErrProfileIncomplete", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO professional_profiles (
+			professional_user_id, profession_type, registration_country_code,
+			registration_region, registration_number
+		) VALUES ($1, 'psychologist', 'BR', 'SP', $2)
+	`, professionalID, "TEST-"+professionalID); err != nil {
+		t.Fatalf("complete profile: %v", err)
 	}
 	reportRequest, err := service.CreateReportRequest(
 		ctx, professionalID, connectionID, periodStart, periodEnd,

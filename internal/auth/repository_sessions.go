@@ -365,6 +365,7 @@ func (r *Repository) ListSessions(
 		WHERE audience = $1
 		  AND %s = $2
 		  AND rotated_at IS NULL
+		  AND revoked_at IS NULL
 		  AND expires_at > $3
 		ORDER BY created_at DESC
 	`, identityColumn)

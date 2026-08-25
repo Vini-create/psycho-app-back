@@ -631,6 +631,76 @@ func (s *Service) Account(ctx context.Context, principal Principal) (Account, er
 	return s.repository.FindAccountByID(ctx, principal.Audience, principal.AccountID)
 }
 
+func (s *Service) UpdateDisplayName(
+	ctx context.Context,
+	principal Principal,
+	displayNameInput string,
+	client ClientInfo,
+) (Account, error) {
+	displayName, err := normalizeDisplayName(displayNameInput)
+	if err != nil {
+		return Account{}, err
+	}
+	if err := s.repository.UpdateDisplayName(
+		ctx, principal.Audience, principal.AccountID, displayName, s.now().UTC(),
+	); err != nil {
+		return Account{}, err
+	}
+	s.recordEvent(ctx, Event{
+		Audience: principal.Audience, AccountID: principal.AccountID,
+		SessionID: principal.SessionID, Type: "profile_updated", Outcome: "success",
+		Client: client,
+	})
+	return s.repository.FindAccountByID(ctx, principal.Audience, principal.AccountID)
+}
+
+func (s *Service) ChangePassword(
+	ctx context.Context,
+	principal Principal,
+	currentPassword string,
+	newPassword string,
+	client ClientInfo,
+) error {
+	if err := ValidatePassword(newPassword); err != nil {
+		return err
+	}
+	account, err := s.repository.FindAccountByID(
+		ctx, principal.Audience, principal.AccountID,
+	)
+	if err != nil {
+		return err
+	}
+	matches, err := s.passwords.Compare(currentPassword, account.PasswordHash)
+	if err != nil {
+		return fmt.Errorf("compare current password: %w", err)
+	}
+	if !matches {
+		return ErrInvalidCredentials
+	}
+	samePassword, err := s.passwords.Compare(newPassword, account.PasswordHash)
+	if err != nil {
+		return fmt.Errorf("compare new password: %w", err)
+	}
+	if samePassword {
+		return ErrPasswordUnchanged
+	}
+	newPasswordHash, err := s.passwords.Hash(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash changed password: %w", err)
+	}
+	if err := s.repository.ChangePassword(
+		ctx, principal, account.PasswordHash, newPasswordHash, s.now().UTC(),
+	); err != nil {
+		return err
+	}
+	s.recordEvent(ctx, Event{
+		Audience: principal.Audience, AccountID: principal.AccountID,
+		SessionID: principal.SessionID, Type: "password_changed", Outcome: "success",
+		Client: client,
+	})
+	return nil
+}
+
 func (s *Service) issueSession(
 	ctx context.Context,
 	audience Audience,

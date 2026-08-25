@@ -87,6 +87,9 @@ func (s *Service) CreateReportRequest(
 	if err != nil {
 		return ReportRequest{}, err
 	}
+	if !access.ProfileComplete {
+		return ReportRequest{}, ErrProfileIncomplete
+	}
 	if !slices.Contains(access.Scopes, "summaries") || periodStart.Before(access.ActivatedAt) {
 		return ReportRequest{}, ErrForbidden
 	}

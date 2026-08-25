@@ -67,6 +67,8 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, audience auth.Audience)
 	mux.HandleFunc("GET "+authPrefix+"/sessions", h.requireAuth(audience, h.listSessions))
 	mux.HandleFunc("DELETE "+authPrefix+"/sessions/{sessionID}", h.requireAuth(audience, h.revokeSession))
 	mux.HandleFunc("GET "+prefix+"/me", h.requireAuth(audience, h.me))
+	mux.HandleFunc("PATCH "+prefix+"/me", h.requireAuth(audience, h.updateMe))
+	mux.HandleFunc("PUT "+authPrefix+"/password", h.requireAuth(audience, h.changePassword))
 
 	if audience == auth.AudienceProfessional {
 		mux.HandleFunc(
@@ -381,11 +383,66 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 		h.handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	h.writeAccount(w, http.StatusOK, account, principal)
+}
+
+func (h *AuthHandler) updateMe(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		DisplayName string `json:"display_name"`
+	}
+	var body request
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+		return
+	}
+	principal := principalFromContext(r.Context())
+	account, err := h.service.UpdateDisplayName(
+		r.Context(), principal, body.DisplayName, clientInfo(r),
+	)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	h.writeAccount(w, http.StatusOK, account, principal)
+}
+
+func (h *AuthHandler) changePassword(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	var body request
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+		return
+	}
+	if err := h.service.ChangePassword(
+		r.Context(), principalFromContext(r.Context()),
+		body.CurrentPassword, body.NewPassword, clientInfo(r),
+	); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AuthHandler) writeAccount(
+	w http.ResponseWriter,
+	status int,
+	account auth.Account,
+	principal auth.Principal,
+) {
+	response := map[string]any{
 		"id": account.ID, "email": account.Email, "display_name": account.DisplayName,
 		"status": account.Status, "email_verified_at": account.EmailVerifiedAt,
 		"audience": principal.Audience, "mfa_verified": principal.MFA,
-	})
+		"created_at": account.CreatedAt, "updated_at": account.UpdatedAt,
+		"google_connected": account.GoogleConnected,
+	}
+	if account.Plan != "" {
+		response["plan"] = account.Plan
+	}
+	writeJSON(w, status, response)
 }
 
 func (h *AuthHandler) beginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
@@ -516,6 +573,8 @@ func (h *AuthHandler) handleServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, auth.ErrInvalidInput), errors.Is(err, auth.ErrWeakPassword):
 		writeError(w, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+	case errors.Is(err, auth.ErrPasswordUnchanged):
+		writeError(w, http.StatusUnprocessableEntity, "password_unchanged", err.Error())
 	case errors.Is(err, auth.ErrConflict):
 		writeError(w, http.StatusConflict, "account_exists", "an account with this email already exists")
 	case errors.Is(err, auth.ErrPasskeyExists):
@@ -553,21 +612,38 @@ func (h *AuthHandler) handleServiceError(w http.ResponseWriter, err error) {
 func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, audience auth.Audience, token string) {
 	// #nosec G124 -- Secure may be false only for localhost development; config
 	// loading requires it to be true in every other environment.
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name: refreshCookieName(audience), Value: token,
 		Path: "/v1/" + string(audience) + "/auth", MaxAge: int(h.config.RefreshTokenTTL.Seconds()),
 		HttpOnly: true, Secure: h.config.CookieSecure, SameSite: http.SameSiteLaxMode,
-	})
+	}
+	h.configureRefreshCookieSite(cookie)
+	http.SetCookie(w, cookie)
 }
 
 func (h *AuthHandler) clearRefreshCookie(w http.ResponseWriter, audience auth.Audience) {
 	// #nosec G124 -- deletion must use the same development/production cookie
 	// attributes as creation; production configuration enforces Secure=true.
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name: refreshCookieName(audience), Value: "",
 		Path: "/v1/" + string(audience) + "/auth", MaxAge: -1,
 		HttpOnly: true, Secure: h.config.CookieSecure, SameSite: http.SameSiteLaxMode,
-	})
+	}
+	h.configureRefreshCookieSite(cookie)
+	http.SetCookie(w, cookie)
+}
+
+func (h *AuthHandler) configureRefreshCookieSite(cookie *http.Cookie) {
+	if !h.config.CookieSecure {
+		return
+	}
+	// O frontend provisório (workers.dev) e a API (railway.app) são sites
+	// diferentes. None permite o envio credentialed e Partitioned mantém o
+	// cookie isolado pelo site de topo mesmo em navegadores que bloqueiam
+	// cookies de terceiros. CORS e originAllowed continuam limitando quem pode
+	// acionar a rotação.
+	cookie.SameSite = http.SameSiteNoneMode
+	cookie.Partitioned = true
 }
 
 func (h *AuthHandler) originAllowed(r *http.Request) bool {

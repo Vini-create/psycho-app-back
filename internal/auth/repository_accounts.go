@@ -123,25 +123,42 @@ func (r *Repository) FindAccountByID(
 	audience Audience,
 	accountID string,
 ) (Account, error) {
-	table, _, err := accountTable(audience)
+	table, identityColumn, err := accountTable(audience)
 	if err != nil {
 		return Account{}, err
 	}
 
+	planExpression := "''"
+	if audience == AudienceApp {
+		planExpression = "account.plan"
+	}
 	query := fmt.Sprintf(`
-		SELECT id::text, email, password_hash, display_name, status, email_verified_at
-		FROM %s
-		WHERE id = $1 AND deleted_at IS NULL
-	`, table)
+		SELECT account.id::text, account.email, account.password_hash,
+		       account.display_name, account.status, account.email_verified_at,
+		       account.created_at, account.updated_at, %s,
+		       EXISTS (
+		           SELECT 1
+		           FROM auth_external_identities AS identity
+		           WHERE identity.audience = $2
+		             AND identity.provider = 'google'
+		             AND identity.%s = account.id
+		       )
+		FROM %s AS account
+		WHERE account.id = $1 AND account.deleted_at IS NULL
+	`, planExpression, identityColumn, table)
 
 	var account Account
-	err = r.pool.QueryRow(ctx, query, accountID).Scan(
+	err = r.pool.QueryRow(ctx, query, accountID, audience).Scan(
 		&account.ID,
 		&account.Email,
 		&account.PasswordHash,
 		&account.DisplayName,
 		&account.Status,
 		&account.EmailVerifiedAt,
+		&account.CreatedAt,
+		&account.UpdatedAt,
+		&account.Plan,
+		&account.GoogleConnected,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Account{}, ErrNotFound
@@ -151,6 +168,89 @@ func (r *Repository) FindAccountByID(
 	}
 
 	return account, nil
+}
+
+func (r *Repository) UpdateDisplayName(
+	ctx context.Context,
+	audience Audience,
+	accountID string,
+	displayName string,
+	now time.Time,
+) error {
+	table, _, err := accountTable(audience)
+	if err != nil {
+		return err
+	}
+	query := fmt.Sprintf(`
+		UPDATE %s
+		SET display_name = $2, updated_at = $3
+		WHERE id = $1 AND deleted_at IS NULL
+	`, table)
+	result, err := r.pool.Exec(ctx, query, accountID, displayName, now)
+	if err != nil {
+		return fmt.Errorf("update account display name: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repository) ChangePassword(
+	ctx context.Context,
+	principal Principal,
+	expectedPasswordHash string,
+	newPasswordHash string,
+	now time.Time,
+) error {
+	table, identityColumn, err := accountTable(principal.Audience)
+	if err != nil {
+		return err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin password change transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	updateQuery := fmt.Sprintf(`
+		UPDATE %s
+		SET password_hash = $3, updated_at = $4
+		WHERE id = $1 AND password_hash = $2 AND deleted_at IS NULL
+	`, table)
+	result, err := tx.Exec(
+		ctx, updateQuery, principal.AccountID, expectedPasswordHash, newPasswordHash, now,
+	)
+	if err != nil {
+		return fmt.Errorf("change account password: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return ErrInvalidCredentials
+	}
+
+	revokeQuery := fmt.Sprintf(`
+		UPDATE auth_sessions
+		SET revoked_at = COALESCE(revoked_at, $4),
+		    revoke_reason = COALESCE(revoke_reason, 'password_changed')
+		WHERE audience = $1
+		  AND %s = $2
+		  AND token_family_id <> (
+		      SELECT token_family_id
+		      FROM auth_sessions
+		      WHERE id = $3 AND audience = $1 AND %s = $2
+		  )
+		  AND revoked_at IS NULL
+	`, identityColumn, identityColumn)
+	if _, err := tx.Exec(
+		ctx, revokeQuery, principal.Audience, principal.AccountID, principal.SessionID, now,
+	); err != nil {
+		return fmt.Errorf("revoke other sessions after password change: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit password change transaction: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) ReplaceOneTimeTokenByEmail(

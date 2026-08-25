@@ -12,6 +12,7 @@ var (
 	ErrConflict             = errors.New("processing already in progress")
 	ErrRequestResolved      = errors.New("report request is already resolved")
 	ErrSubscriptionRequired = errors.New("active subscription is required")
+	ErrProfileIncomplete    = errors.New("professional profile is incomplete")
 	ErrNoMessages           = errors.New("period has no messages")
 	ErrPeriodTooLarge       = errors.New("period contains too many messages")
 )

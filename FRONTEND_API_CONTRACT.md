@@ -251,10 +251,37 @@ Resposta `200`:
   "display_name": "Nome da Pessoa",
   "status": "active",
   "email_verified_at": "2026-08-18T15:00:00Z",
-  "audience": "professional",
-  "mfa_verified": true
+  "audience": "app",
+  "mfa_verified": false,
+  "created_at": "2026-08-18T14:00:00Z",
+  "updated_at": "2026-08-18T15:00:00Z",
+  "google_connected": true,
+  "plan": "free"
 }
 ```
+
+`plan` existe apenas para contas `app`.
+
+`PATCH /v1/{audience}/me`
+
+```json
+{ "display_name": "Nome da Pessoa" }
+```
+
+Resposta `200`: conta atualizada no mesmo formato de `GET /me`.
+
+`PUT /v1/{audience}/auth/password`
+
+```json
+{
+  "current_password": "senha atual",
+  "new_password": "nova senha longa com 12+ caracteres"
+}
+```
+
+Resposta `204`. As outras sessões da conta são revogadas; a sessão atual
+permanece ativa. `401 invalid_credentials` indica senha atual incorreta e
+`422 password_unchanged` indica que a nova senha é igual à atual.
 
 `GET /v1/{audience}/auth/sessions`
 
@@ -506,7 +533,12 @@ Produção exige HTTPS. O RP ID é somente o domínio, sem `https://`, porta ou 
 - RP ID: `anamnesys.com.br`
 - origin permitida: `https://app.anamnesys.com.br`
 
-Defina `AUTH_COOKIE_SECURE=true` em produção. Prefira frontend e API no mesmo site registrável para manter o refresh cookie `SameSite=Lax` sem abrir uma política cross-site mais fraca.
+Defina `AUTH_COOKIE_SECURE=true` em produção. Nesse modo, o refresh cookie usa
+`SameSite=None; Secure; Partitioned` para funcionar durante a fase provisória
+em que frontend e API estão em sites diferentes (`workers.dev` e
+`railway.app`). CORS e a validação explícita de origem continuam obrigatórios.
+Quando houver domínio próprio, prefira frontend e API no mesmo site
+registrável.
 
 ## Consentimentos do app
 
@@ -704,7 +736,7 @@ Todas as rotas profissionais abaixo exigem access token `professional` e sessão
 }
 ```
 
-`profession_type`: `psychologist`, `psychiatrist`, `psychoanalyst`, `therapist`, `psychotherapist`, `occupational_therapist`, `counselor` ou `other`. `bio` tem até 2.000 caracteres; são permitidas até 50 certificações de 200 caracteres cada.
+`profession_type`: `psychologist`, `psychiatrist`, `psychoanalyst`, `therapist`, `psychotherapist`, `occupational_therapist`, `counselor` ou `other`. País, região e número de registro são obrigatórios para concluir o onboarding. `bio` tem até 2.000 caracteres; são permitidas até 50 certificações de 200 caracteres cada.
 
 ### Convites
 
@@ -883,7 +915,7 @@ Fluxo esperado no frontend:
 5. A solicitação muda para `sent` e o relatório aparece apenas para o profissional.
 
 Erros imediatos específicos: `402 subscription_required`,
-`403 context_consent_required`, `409 context_request_conflict` e
+`403 context_consent_required`, `409 profile_incomplete`, `409 context_request_conflict` e
 `409 context_request_resolved`. Período sem mensagens, limite de 500 mensagens,
 indisponibilidade da IA e respostas inválidas são tratados pelo worker e mudam a
 solicitação para `failed` após a política de tentativas.

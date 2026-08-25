@@ -24,6 +24,7 @@ type connectionAccess struct {
 	Scopes             []string
 	ActivatedAt        time.Time
 	SubscriptionStatus string
+	ProfileComplete    bool
 }
 
 type storedReportRequest struct {
@@ -147,6 +148,12 @@ func (r *Repository) ProfessionalConnectionAccess(
 	err := r.pool.QueryRow(ctx, `
 		SELECT connection.app_user_id::text, connection.activated_at,
 		       COALESCE(subscription.status, 'inactive'),
+		       COALESCE(bool_and(
+		           profile.professional_user_id IS NOT NULL
+		           AND char_length(btrim(profile.registration_country_code)) = 2
+		           AND char_length(btrim(profile.registration_region)) > 0
+		           AND char_length(btrim(profile.registration_number)) > 0
+		       ), false),
 		       COALESCE(array_agg(consent.scope ORDER BY consent.scope)
 		           FILTER (
 				WHERE consent.scope IS NOT NULL
@@ -158,6 +165,8 @@ func (r *Repository) ProfessionalConnectionAccess(
 		  ON membership.id = connection.professional_membership_id
 		LEFT JOIN subscriptions AS subscription
 		  ON subscription.organization_id = connection.organization_id
+		LEFT JOIN professional_profiles AS profile
+		  ON profile.professional_user_id = membership.professional_user_id
 		LEFT JOIN connection_consents AS consent ON consent.connection_id = connection.id
 		WHERE connection.id = $1
 		  AND membership.professional_user_id = $2
@@ -166,6 +175,7 @@ func (r *Repository) ProfessionalConnectionAccess(
 		GROUP BY connection.id, subscription.status
 	`, connectionID, professionalUserID, policyVersion).Scan(
 		&access.AppUserID, &access.ActivatedAt, &access.SubscriptionStatus,
+		&access.ProfileComplete,
 		&access.Scopes,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
