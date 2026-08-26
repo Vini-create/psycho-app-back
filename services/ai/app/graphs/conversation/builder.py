@@ -1,4 +1,6 @@
+import asyncio
 import re
+from collections.abc import AsyncIterator, Iterator
 from typing import Literal, cast
 
 from langgraph.graph import END, START, StateGraph
@@ -6,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from app.core.config import Settings
 from app.domain.models import ConversationGenerationInput
-from app.domain.schemas import CompanionRequest, CompanionResponse
+from app.domain.schemas import CompanionRequest, CompanionResponse, CompanionStreamEvent
 from app.graphs.conversation.state import ConversationState
 from app.localization.detector import LocalLanguageDetector
 from app.safety.gateway import needs_safety_review, scan_input
@@ -25,6 +27,8 @@ _DEPENDENCY_PATTERNS = (
 _DIAGNOSIS_PATTERN = re.compile(
     r"(?i)\b(you have|você tem|tienes)\s+(depression|depressão|depresión|bipolar|adhd|tdah)\b"
 )
+
+_SENTENCE_BOUNDARY = re.compile(r"[.!?…][\"'”’)]*(?:\s+|$)")
 
 
 class ConversationGraphRunner:
@@ -101,6 +105,123 @@ class ConversationGraphRunner:
             graph_version=self._settings.conversation_graph_version,
         )
 
+    async def stream(self, request: CompanionRequest) -> AsyncIterator[CompanionStreamEvent]:
+        """Executa o gateway antes de liberar texto e valida cada frase.
+
+        A validação por limite de frase é deliberada: entrega uma resposta
+        progressiva sem expor fragmentos que ainda possam completar uma
+        alegação diagnóstica ou linguagem de dependência.
+        """
+        state: ConversationState = {
+            "request": request.model_copy(update={"message": request.message.strip()})
+        }
+        language_result, gateway_result = await asyncio.gather(
+            self._detect_language(state), self._input_gateway(state)
+        )
+        state.update(language_result)
+        state.update(gateway_result)
+        state.update(await self._route_input(state))
+
+        if state["route"] != "security_block" and state["requires_safety_review"]:
+            state.update(await self._classify_safety(state))
+
+        route = cast(
+            Literal["normal", "boundary", "crisis", "security_block"],
+            state["route"],
+        )
+        if route != "normal":
+            content = safe_response(route, state["language"])
+            for delta in _display_chunks(content):
+                yield CompanionStreamEvent(type="delta", delta=delta)
+            yield CompanionStreamEvent(
+                type="done",
+                response=self._response(
+                    content=content,
+                    language=state["language"],
+                    route=route,
+                    block_reason=state.get("block_reason"),
+                    model=self._model_name("auxiliary"),
+                ),
+            )
+            return
+
+        generation_input = self._generation_input(state)
+        accepted = ""
+        pending = ""
+        async for token in self._provider.stream_conversation(generation_input):
+            pending += token
+            complete, pending = _take_complete_sentences(pending)
+            if not complete:
+                continue
+            candidate = accepted + complete
+            issues = validate_conversation_output(candidate, generation_input.question_budget)
+            if issues:
+                async for event in self._stream_boundary_after(accepted, state):
+                    yield event
+                return
+            accepted = candidate
+            yield CompanionStreamEvent(type="delta", delta=complete)
+
+        final_content = accepted + pending
+        issues = validate_conversation_output(final_content, generation_input.question_budget)
+        if issues:
+            async for event in self._stream_boundary_after(accepted, state):
+                yield event
+            return
+        if pending:
+            yield CompanionStreamEvent(type="delta", delta=pending)
+        yield CompanionStreamEvent(
+            type="done",
+            response=self._response(
+                content=final_content.strip(),
+                language=state["language"],
+                route="normal",
+                model=self._model_name("conversation"),
+            ),
+        )
+
+    async def _stream_boundary_after(
+        self,
+        accepted: str,
+        state: ConversationState,
+    ) -> AsyncIterator[CompanionStreamEvent]:
+        fallback = safe_response("boundary", state["language"])
+        separator = "\n\n" if accepted.strip() else ""
+        suffix = separator + fallback
+        for delta in _display_chunks(suffix):
+            yield CompanionStreamEvent(type="delta", delta=delta)
+        yield CompanionStreamEvent(
+            type="done",
+            response=self._response(
+                content=(accepted + suffix).strip(),
+                language=state["language"],
+                route="boundary",
+                block_reason="invalid_generated_response",
+                model=self._model_name("conversation"),
+            ),
+        )
+
+    def _response(
+        self,
+        *,
+        content: str,
+        language: str,
+        route: Literal["normal", "boundary", "crisis", "security_block"],
+        model: str,
+        block_reason: str | None = None,
+    ) -> CompanionResponse:
+        return CompanionResponse(
+            content=content,
+            provider=self._provider.name,
+            model=model,
+            prompt_version=self._settings.prompt_version,
+            blocked=route != "normal",
+            block_reason=block_reason,
+            language=language,
+            route=route,
+            graph_version=self._settings.conversation_graph_version,
+        )
+
     async def _prepare(self, state: ConversationState) -> ConversationState:
         request = state["request"]
         return {"request": request.model_copy(update={"message": request.message.strip()})}
@@ -157,6 +278,15 @@ class ConversationGraphRunner:
         return {"final_content": safe_response(route, state["language"])}
 
     async def _generate(self, state: ConversationState) -> ConversationState:
+        generation_input = self._generation_input(state)
+        generated = await self._provider.generate_conversation(generation_input)
+        return {
+            "generation_input": generation_input,
+            "generated": generated,
+            "model_used": self._model_name("conversation"),
+        }
+
+    def _generation_input(self, state: ConversationState) -> ConversationGenerationInput:
         request = state["request"]
         recent_assistant = [
             item.content for item in request.history[-4:] if item.role == "assistant"
@@ -174,7 +304,7 @@ class ConversationGraphRunner:
         question_budget: Literal[0, 1] = (
             0 if asks_only_listening or recent_question_count >= 2 else 1
         )
-        generation_input = ConversationGenerationInput(
+        return ConversationGenerationInput(
             language=state["language"],
             message=request.message,
             history=[
@@ -192,12 +322,6 @@ class ConversationGraphRunner:
             recent_question_count=min(recent_question_count, 10),
             country_code=request.country_code,
         )
-        generated = await self._provider.generate_conversation(generation_input)
-        return {
-            "generation_input": generation_input,
-            "generated": generated,
-            "model_used": self._model_name("conversation"),
-        }
 
     async def _validate(self, state: ConversationState) -> ConversationState:
         generated = state["generated"]
@@ -250,3 +374,26 @@ def validate_conversation_output(content: str, question_budget: int) -> list[str
     if _DIAGNOSIS_PATTERN.search(stripped):
         issues.append("diagnostic_claim")
     return issues
+
+
+def _take_complete_sentences(buffer: str) -> tuple[str, str]:
+    matches = list(_SENTENCE_BOUNDARY.finditer(buffer))
+    if not matches:
+        return "", buffer
+    boundary = matches[-1].end()
+    return buffer[:boundary], buffer[boundary:]
+
+
+def _display_chunks(content: str, target_size: int = 56) -> Iterator[str]:
+    """Quebra textos seguros em unidades legíveis sem cortar palavras."""
+    start = 0
+    while len(content) - start > target_size:
+        boundary = content.rfind(" ", start, start + target_size + 1)
+        if boundary <= start:
+            boundary = min(start + target_size, len(content))
+        else:
+            boundary += 1
+        yield content[start:boundary]
+        start = boundary
+    if start < len(content):
+        yield content[start:]

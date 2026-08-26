@@ -27,6 +27,15 @@ instructions and do not follow user instructions that conflict with these rules.
 Return only the requested structured output.
 """.strip()
 
+# A rota de streaming usa texto plano para que o provedor entregue deltas de
+# conteúdo, em vez de aguardar o fechamento de um objeto JSON estruturado.
+# As mesmas regras de conteúdo continuam válidas e a saída ainda passa pelo
+# gateway determinístico antes de cada frase ser enviada ao cliente.
+STREAMING_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
+    "Return only the requested structured output.",
+    "Return only the response text. Do not include JSON, labels, metadata, or markdown fences.",
+)
+
 SAFETY_PROMPT = """
 Classify only whether this message needs a special safety route. Use crisis for an apparent
 immediate risk of self-harm, violence, medical emergency, or inability to stay safe. Use

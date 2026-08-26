@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Vini-create/psycho-app-back/internal/auth"
@@ -187,6 +190,10 @@ func (h *ChatHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many message requests")
 		return
 	}
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		h.streamMessage(w, r, principal.AccountID, body.Content)
+		return
+	}
 	result, err := h.service.SendMessage(
 		r.Context(),
 		principal.AccountID,
@@ -203,6 +210,107 @@ func (h *ChatHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusAccepted
 	}
 	writeJSON(w, status, result)
+}
+
+type sseWriter struct {
+	mu      sync.Mutex
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (writer *sseWriter) event(name string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if _, err := writer.w.Write([]byte("event: " + name + "\ndata: ")); err != nil {
+		return err
+	}
+	if _, err := writer.w.Write(data); err != nil {
+		return err
+	}
+	if _, err := writer.w.Write([]byte("\n\n")); err != nil {
+		return err
+	}
+	writer.flusher.Flush()
+	return nil
+}
+
+func (writer *sseWriter) heartbeat() error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if _, err := writer.w.Write([]byte(": keep-alive\n\n")); err != nil {
+		return err
+	}
+	writer.flusher.Flush()
+	return nil
+}
+
+func (h *ChatHandler) streamMessage(
+	w http.ResponseWriter,
+	r *http.Request,
+	appUserID string,
+	content string,
+) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming_unavailable", "streaming is unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Vary", "Accept")
+	w.WriteHeader(http.StatusOK)
+	stream := &sseWriter{w: w, flusher: flusher}
+	if err := stream.event("assistant.started", map[string]any{}); err != nil {
+		return
+	}
+
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	defer func() {
+		close(stopHeartbeat)
+		<-heartbeatDone
+	}()
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(12 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := stream.heartbeat(); err != nil {
+					return
+				}
+			case <-stopHeartbeat:
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}()
+
+	result, err := h.service.SendMessageStream(
+		r.Context(),
+		appUserID,
+		r.PathValue("conversationID"),
+		content,
+		r.Header.Get("Idempotency-Key"),
+		func(delta string) error {
+			return stream.event("assistant.delta", map[string]string{"delta": delta})
+		},
+	)
+	if err != nil {
+		slog.Error("chat stream failed", "error", err)
+		_ = stream.event("assistant.error", map[string]string{
+			"code": "generation_failed", "message": "Não consegui concluir a resposta agora.",
+		})
+		return
+	}
+	_ = stream.event("assistant.completed", result)
 }
 
 func (h *ChatHandler) retryMessage(w http.ResponseWriter, r *http.Request) {

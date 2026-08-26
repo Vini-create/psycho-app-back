@@ -45,6 +45,50 @@ func TestHTTPClientRespond(t *testing.T) {
 	}
 }
 
+func TestHTTPClientRespondStream(t *testing.T) {
+	client, err := NewHTTPClient("https://companion.example.com", "test-secret", time.Second)
+	if err != nil {
+		t.Fatalf("NewHTTPClient() error = %v", err)
+	}
+	client.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/companion/respond/stream" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.Header.Get("Accept") != "application/x-ndjson" {
+			t.Fatalf("accept = %q", r.Header.Get("Accept"))
+		}
+		body := strings.Join([]string{
+			`{"type":"start"}`,
+			`{"type":"delta","delta":"Resposta "}`,
+			`{"type":"heartbeat"}`,
+			`{"type":"delta","delta":"acolhedora"}`,
+			`{"type":"done","response":{"content":"Resposta acolhedora","provider":"test","model":"test-model","prompt_version":"v1","blocked":false,"language":"pt-BR","route":"normal","graph_version":"conversation-graph-v1"}}`,
+		}, "\n") + "\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})
+
+	var deltas strings.Builder
+	response, err := client.RespondStream(
+		context.Background(),
+		Request{RequestID: "request-1", Message: "Olá"},
+		func(delta string) error {
+			deltas.WriteString(delta)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("RespondStream() error = %v", err)
+	}
+	if deltas.String() != response.Content {
+		t.Fatalf("deltas = %q, content = %q", deltas.String(), response.Content)
+	}
+}
+
 func TestHTTPClientRejectsUnexpectedResponse(t *testing.T) {
 	client, err := NewHTTPClient("https://companion.example.com", "test-secret", time.Second)
 	if err != nil {

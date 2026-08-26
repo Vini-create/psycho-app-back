@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -50,9 +51,23 @@ type Client interface {
 	ProcessContext(ctx context.Context, request ContextRequest) (ContextResponse, error)
 }
 
+// StreamingClient é opcional para manter compatibilidade com clientes de
+// teste e com integrações que ainda implementam apenas request/response.
+type StreamingClient interface {
+	RespondStream(ctx context.Context, request Request, onDelta func(string) error) (Response, error)
+}
+
 type UnavailableClient struct{}
 
 func (UnavailableClient) Respond(context.Context, Request) (Response, error) {
+	return Response{}, ErrUnavailable
+}
+
+func (UnavailableClient) RespondStream(
+	context.Context,
+	Request,
+	func(string) error,
+) (Response, error) {
 	return Response{}, ErrUnavailable
 }
 
@@ -202,10 +217,109 @@ func (c *HTTPClient) Respond(ctx context.Context, input Request) (Response, erro
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Response{}, fmt.Errorf("%w: response must contain one JSON object", ErrUnavailable)
 	}
+	return validateResponse(output)
+}
+
+type streamEvent struct {
+	Type     string    `json:"type"`
+	Delta    string    `json:"delta,omitempty"`
+	Response *Response `json:"response,omitempty"`
+	Code     string    `json:"code,omitempty"`
+}
+
+func (c *HTTPClient) RespondStream(
+	ctx context.Context,
+	input Request,
+	onDelta func(string) error,
+) (Response, error) {
+	body, err := json.Marshal(input)
+	if err != nil {
+		return Response{}, fmt.Errorf("encode companion stream request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		c.baseURL+"/v1/companion/respond/stream",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return Response{}, fmt.Errorf("create companion stream request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/x-ndjson")
+	request.Header.Set("X-Request-ID", input.RequestID)
+
+	response, err := c.client.Do(request)
+	if err != nil {
+		return Response{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return Response{}, fmt.Errorf("%w: stream status %d", ErrUnavailable, response.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(io.LimitReader(response.Body, 256*1024))
+	scanner.Buffer(make([]byte, 4096), 128*1024)
+	var output *Response
+	var streamed strings.Builder
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var event streamEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			return Response{}, fmt.Errorf("%w: invalid stream event", ErrUnavailable)
+		}
+		switch event.Type {
+		case "start", "heartbeat":
+			continue
+		case "delta":
+			if event.Delta == "" {
+				return Response{}, fmt.Errorf("%w: empty stream delta", ErrUnavailable)
+			}
+			if streamed.Len()+len(event.Delta) > 64*1024 {
+				return Response{}, fmt.Errorf("%w: stream content is too large", ErrUnavailable)
+			}
+			streamed.WriteString(event.Delta)
+			if onDelta != nil {
+				if err := onDelta(event.Delta); err != nil {
+					return Response{}, err
+				}
+			}
+		case "done":
+			if event.Response == nil || output != nil {
+				return Response{}, fmt.Errorf("%w: invalid done event", ErrUnavailable)
+			}
+			validated, err := validateResponse(*event.Response)
+			if err != nil {
+				return Response{}, err
+			}
+			if strings.TrimSpace(streamed.String()) != strings.TrimSpace(validated.Content) {
+				return Response{}, fmt.Errorf("%w: stream content does not match completion", ErrUnavailable)
+			}
+			output = &validated
+		case "error":
+			return Response{}, fmt.Errorf("%w: stream generation failed (%s)", ErrUnavailable, event.Code)
+		default:
+			return Response{}, fmt.Errorf("%w: unknown stream event", ErrUnavailable)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Response{}, fmt.Errorf("%w: read stream", ErrUnavailable)
+	}
+	if output == nil {
+		return Response{}, fmt.Errorf("%w: stream ended before completion", ErrUnavailable)
+	}
+	return *output, nil
+}
+
+func validateResponse(output Response) (Response, error) {
 	if strings.TrimSpace(output.Content) == "" {
 		return Response{}, fmt.Errorf("%w: empty response", ErrUnavailable)
 	}
-
 	return output, nil
 }
 

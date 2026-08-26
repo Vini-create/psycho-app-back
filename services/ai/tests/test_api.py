@@ -1,3 +1,4 @@
+import json
 import os
 from collections.abc import AsyncIterator
 
@@ -47,6 +48,32 @@ async def test_companion_mock_contract(client: AsyncClient) -> None:
     assert body["provider"] == "mock"
     assert body["route"] == "normal"
     assert body["language"] == "pt-BR"
+
+
+async def test_companion_stream_emits_deltas_and_matching_final_response(
+    client: AsyncClient,
+) -> None:
+    async with client.stream(
+        "POST",
+        "/v1/companion/respond/stream",
+        headers=HEADERS,
+        json={
+            "request_id": "778243e3-24ea-4c17-98d6-b176db72bce5",
+            "conversation_id": "68d94ac0-e6e1-450f-940a-f517f26d5fb7",
+            "user_id": "0dbce025-9bd1-46b7-aadc-37ccbcfe97e7",
+            "message": "Olá",
+            "history": [],
+            "locale_hint": "pt-BR",
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = [json.loads(line) async for line in response.aiter_lines() if line]
+
+    assert events[0] == {"type": "start"}
+    deltas = [event["delta"] for event in events if event["type"] == "delta"]
+    done = next(event for event in events if event["type"] == "done")
+    assert len(deltas) >= 1
+    assert "".join(deltas).strip() == done["response"]["content"]
 
 
 async def test_context_preserves_source_traceability(client: AsyncClient) -> None:

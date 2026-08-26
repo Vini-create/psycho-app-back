@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Any, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -15,7 +16,12 @@ from app.domain.models import (
     ReportGenerationInput,
     SafetyDecision,
 )
-from app.prompts.companion_v2 import SAFETY_PROMPT, SECURITY_PROMPT, SYSTEM_PROMPT
+from app.prompts.companion_v2 import (
+    SAFETY_PROMPT,
+    SECURITY_PROMPT,
+    STREAMING_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+)
 from app.prompts.context_v2 import FACT_EXTRACTION_PROMPT
 from app.prompts.context_v2 import SYSTEM_PROMPT as REPORT_SYSTEM_PROMPT
 
@@ -92,6 +98,18 @@ class OpenAIProvider:
             ]
         )
         return cast(ConversationModelOutput, result)
+
+    async def stream_conversation(self, request: ConversationGenerationInput) -> AsyncIterator[str]:
+        """Emite apenas texto visível; reasoning e metadados nunca entram no stream."""
+        async for chunk in self._conversation_model.astream(
+            [
+                SystemMessage(content=STREAMING_SYSTEM_PROMPT),
+                HumanMessage(content=request.model_dump_json()),
+            ]
+        ):
+            text = chunk.text
+            if text:
+                yield text
 
     async def repair_conversation(
         self, request: ConversationGenerationInput, issues: list[str]

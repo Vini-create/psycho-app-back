@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Protocol
 
 from app.domain.models import (
@@ -13,6 +14,7 @@ from app.domain.models import (
 from app.domain.schemas import (
     CompanionRequest,
     CompanionResponse,
+    CompanionStreamEvent,
     ContextRequest,
     ContextResponse,
 )
@@ -31,6 +33,8 @@ class AIProvider(Protocol):
         self, request: ConversationGenerationInput
     ) -> ConversationModelOutput: ...
 
+    def stream_conversation(self, request: ConversationGenerationInput) -> AsyncIterator[str]: ...
+
     async def repair_conversation(
         self, request: ConversationGenerationInput, issues: list[str]
     ) -> ConversationModelOutput: ...
@@ -42,5 +46,7 @@ class AIProvider(Protocol):
 
 class AIService(Protocol):
     async def respond(self, request: CompanionRequest) -> CompanionResponse: ...
+
+    def stream(self, request: CompanionRequest) -> AsyncIterator[CompanionStreamEvent]: ...
 
     async def process_context(self, request: ContextRequest) -> ContextResponse: ...

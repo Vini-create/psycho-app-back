@@ -45,6 +45,19 @@ class CompanionResponse(StrictModel):
     graph_version: str = Field(default="conversation-graph-v1", min_length=1, max_length=100)
 
 
+class CompanionStreamEvent(StrictModel):
+    """Evento interno do stream Go <- serviço de IA.
+
+    `delta` contém somente texto que já atravessou as validações determinísticas
+    disponíveis naquele limite de frase. O evento `done` carrega o contrato
+    completo para o Go persistir exatamente o que foi exibido.
+    """
+
+    type: Literal["delta", "done"]
+    delta: str | None = None
+    response: CompanionResponse | None = None
+
+
 class ContextMessage(StrictModel):
     id: UUID
     conversation_id: UUID | None = None

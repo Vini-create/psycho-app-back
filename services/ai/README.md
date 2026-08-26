@@ -43,6 +43,7 @@ Endpoints internos:
 
 - `GET /health`
 - `POST /v1/companion/respond`
+- `POST /v1/companion/respond/stream` (`application/x-ndjson`, deltas validados)
 - `POST /v1/context/process`
 
 Os dois endpoints de inferência exigem `Authorization: Bearer <AI_SERVICE_API_KEY>`. Consulte

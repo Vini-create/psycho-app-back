@@ -214,6 +214,28 @@ func (s *Service) SendMessage(
 	content string,
 	idempotencyKey string,
 ) (SendResult, error) {
+	return s.sendMessage(ctx, appUserID, conversationID, content, idempotencyKey, nil)
+}
+
+func (s *Service) SendMessageStream(
+	ctx context.Context,
+	appUserID string,
+	conversationID string,
+	content string,
+	idempotencyKey string,
+	onDelta func(string) error,
+) (SendResult, error) {
+	return s.sendMessage(ctx, appUserID, conversationID, content, idempotencyKey, onDelta)
+}
+
+func (s *Service) sendMessage(
+	ctx context.Context,
+	appUserID string,
+	conversationID string,
+	content string,
+	idempotencyKey string,
+	onDelta func(string) error,
+) (SendResult, error) {
 	if err := validateMessageInput(conversationID, content, idempotencyKey); err != nil {
 		return SendResult{}, err
 	}
@@ -246,7 +268,7 @@ func (s *Service) SendMessage(
 		return s.resultForExistingMessage(ctx, appUserID, userMessage)
 	}
 
-	return s.generateReply(ctx, appUserID, userMessage)
+	return s.generateReply(ctx, appUserID, userMessage, onDelta)
 }
 
 func (s *Service) RetryMessage(
@@ -283,13 +305,14 @@ func (s *Service) RetryMessage(
 	if err != nil {
 		return SendResult{}, err
 	}
-	return s.generateReply(ctx, appUserID, message)
+	return s.generateReply(ctx, appUserID, message, nil)
 }
 
 func (s *Service) generateReply(
 	ctx context.Context,
 	appUserID string,
 	userMessage Message,
+	onDelta func(string) error,
 ) (SendResult, error) {
 	historyStored, err := s.repository.ListMessages(
 		ctx,
@@ -308,13 +331,26 @@ func (s *Service) generateReply(
 	}
 	history := boundedCompanionHistory(historyMessages)
 
-	response, err := s.companion.Respond(ctx, companion.Request{
+	request := companion.Request{
 		RequestID:      userMessage.ID,
 		ConversationID: userMessage.ConversationID,
 		UserID:         appUserID,
 		Message:        userMessage.Content,
 		History:        history,
-	})
+	}
+	var response companion.Response
+	if onDelta != nil {
+		if streaming, ok := s.companion.(companion.StreamingClient); ok {
+			response, err = streaming.RespondStream(ctx, request, onDelta)
+		} else {
+			response, err = s.companion.Respond(ctx, request)
+			if err == nil {
+				err = onDelta(response.Content)
+			}
+		}
+	} else {
+		response, err = s.companion.Respond(ctx, request)
+	}
 	if err != nil {
 		slog.Warn("companion request failed", "message_id", userMessage.ID, "error", err)
 		if markErr := s.markGenerationFailed(

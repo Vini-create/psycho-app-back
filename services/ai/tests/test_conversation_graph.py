@@ -165,6 +165,23 @@ async def test_failed_repair_falls_back_to_safe_boundary_template() -> None:
     assert provider.repair_calls == 1
 
 
+async def test_stream_never_emits_a_sentence_that_breaks_question_budget() -> None:
+    app_settings = settings()
+    provider = InvalidThenValidProvider(app_settings)
+    runner = ConversationGraphRunner(provider, app_settings)
+
+    events = [
+        event async for event in runner.stream(request("Não quero conselho, só quero desabafar."))
+    ]
+    streamed = "".join(event.delta or "" for event in events if event.type == "delta")
+    done = next(event for event in events if event.type == "done")
+
+    assert "O que aconteceu?" not in streamed
+    assert done.response is not None
+    assert streamed == done.response.content
+    assert done.response.route == "boundary"
+
+
 class OpenAINamedMock(CountingProvider):
     name = "openai"
 

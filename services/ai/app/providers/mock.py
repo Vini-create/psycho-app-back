@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from datetime import datetime
 from uuid import UUID
 
@@ -66,6 +67,12 @@ class MockProvider:
         self, request: ConversationGenerationInput, issues: list[str]
     ) -> ConversationModelOutput:
         return await self.generate_conversation(request)
+
+    async def stream_conversation(self, request: ConversationGenerationInput) -> AsyncIterator[str]:
+        generated = await self.generate_conversation(request)
+        words = generated.content.split(" ")
+        for index, word in enumerate(words):
+            yield word if index == len(words) - 1 else word + " "
 
     async def extract_facts(self, request: ReportGenerationInput) -> AtomicFacts:
         message = request.messages[0]

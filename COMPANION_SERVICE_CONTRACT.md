@@ -1,14 +1,27 @@
 # Contrato Go API → FastAPI AI
 
-Atualizado em: 2026-08-19
+Atualizado em: 2026-08-26
 
-O serviço é interno. Ambos os POSTs exigem `Authorization: Bearer
+O serviço é interno. Todos os POSTs exigem `Authorization: Bearer
 <AI_SERVICE_API_KEY>`, `Content-Type: application/json` e `X-Request-ID`. O Go não segue
 redirect e usa timeout. Todos os schemas são estritos; campo desconhecido invalida a resposta.
 
 ## Conversa
 
 `POST /v1/companion/respond`
+
+A variante preferencial para chat é `POST /v1/companion/respond/stream`, com
+`Accept: application/x-ndjson`. Ela recebe o mesmo request e emite uma linha
+JSON por evento:
+
+- `start` e `heartbeat`: controle de conexão, sem conteúdo;
+- `delta`: fragmento de texto validado em limite de frase;
+- `done`: `response` com o mesmo contrato completo abaixo;
+- `error`: falha genérica, sem detalhes internos.
+
+O Go soma todos os deltas e exige que o resultado corresponda ao `content` de
+`done` antes de persistir. A rota sem `/stream` permanece disponível como
+fallback request/response.
 
 ```json
 {
