@@ -11,6 +11,7 @@ func NewRouter(
 	chatHandler *ChatHandler,
 	careHandler *CareHandler,
 	insightHandler *InsightHandler,
+	checkinHandler *CheckinHandler,
 	allowedOrigins []string,
 ) http.Handler {
 	mux := newMux()
@@ -19,6 +20,7 @@ func NewRouter(
 	chatHandler.RegisterRoutes(mux, authHandler)
 	careHandler.RegisterRoutes(mux, authHandler)
 	insightHandler.RegisterRoutes(mux, authHandler)
+	checkinHandler.RegisterRoutes(mux, authHandler)
 
 	return securityHeaders(corsMiddleware(mux, allowedOrigins))
 }

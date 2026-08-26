@@ -38,6 +38,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_provider_credentials(self) -> "Settings":
+        if self.environment == "production" and self.provider == "mock":
+            raise ValueError("AI_PROVIDER=mock cannot be used in production")
         if self.provider == "openai" and self.openai_api_key is None:
             raise ValueError("AI_OPENAI_API_KEY is required when AI_PROVIDER=openai")
         return self

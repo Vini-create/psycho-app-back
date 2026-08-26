@@ -13,6 +13,7 @@ import (
 	"github.com/Vini-create/psycho-app-back/internal/auth"
 	"github.com/Vini-create/psycho-app-back/internal/care"
 	"github.com/Vini-create/psycho-app-back/internal/chat"
+	"github.com/Vini-create/psycho-app-back/internal/checkin"
 	"github.com/Vini-create/psycho-app-back/internal/companion"
 	"github.com/Vini-create/psycho-app-back/internal/config"
 	appemail "github.com/Vini-create/psycho-app-back/internal/email"
@@ -180,6 +181,15 @@ func run() error {
 	}
 	insightHandler := httpapi.NewInsightHandler(insightService)
 
+	checkinService, err := checkin.NewService(
+		checkin.NewRepository(databasePool),
+		secretCipher,
+	)
+	if err != nil {
+		return fmt.Errorf("create check-in service: %w", err)
+	}
+	checkinHandler := httpapi.NewCheckinHandler(checkinService)
+
 	var emailSender appemail.Sender = appemail.MockSender{}
 	if cfg.Email.Provider == "brevo" {
 		brevoSender, err := appemail.NewBrevoSender(
@@ -249,7 +259,8 @@ func run() error {
 	}
 
 	router := httpapi.NewRouter(
-		authHandler, chatHandler, careHandler, insightHandler, cfg.Auth.AllowedOrigins,
+		authHandler, chatHandler, careHandler, insightHandler, checkinHandler,
+		cfg.Auth.AllowedOrigins,
 	)
 
 	server := http.Server{

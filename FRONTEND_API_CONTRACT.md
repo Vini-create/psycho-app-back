@@ -954,6 +954,226 @@ Erros imediatos específicos: `402 subscription_required`,
 indisponibilidade da IA e respostas inválidas são tratados pelo worker e mudam a
 solicitação para `failed` após a política de tentativas.
 
+## Check-in diário
+
+O profissional autora um questionário de escala, envia a um vínculo e o paciente
+responde uma vez por dia. Nada é coletado sem dois aceites independentes: um
+para passar a responder o check-in, outro para entregar as respostas de um
+período. O profissional nunca lê resposta dia a dia por conta própria — o que
+ele recebe é um retrato agregado, calculado no backend e congelado no momento
+do aceite.
+
+Todas as rotas profissionais exigem token com MFA, perfil completo e assinatura
+`trialing` ou `active`. As rotas do paciente exigem apenas a conta `app`.
+
+Datas de check-in trafegam como dia local (`YYYY-MM-DD`), nunca como timestamp:
+o dia é do paciente, e o fuso de quem lê não pode deslocá-lo.
+
+### 1. Modelos do profissional
+
+`POST /v1/professional/checkin-templates`
+
+```json
+{
+  "title": "Check-in diário",
+  "legend": "Responda pensando no dia de hoje.",
+  "questions": [
+    {
+      "prompt": "Como estava seu humor hoje?",
+      "legend": "A primeira alternativa é o pior dia possível; a última, o melhor.",
+      "options": [
+        { "label": "Muito ruim" },
+        { "label": "Ruim" },
+        { "label": "Nem bom nem ruim" },
+        { "label": "Bom" },
+        { "label": "Muito bom" }
+      ]
+    }
+  ]
+}
+```
+
+**A escala é fixa: exatamente cinco alternativas por pergunta, notas de 1 a 5.**
+A nota não vem no corpo — ela é a posição do rótulo, então a ordem importa: o
+primeiro rótulo é o extremo mais baixo e o quinto é o mais alto. Escala uniforme
+é o que permite perguntas diferentes dividirem os mesmos eixos de um radar sem
+que a forma minta sobre a proporção, e tira do profissional uma decisão que ele
+não tem por que tomar.
+
+Limites restantes: 1–12 perguntas, título até 120 caracteres, legenda até 500,
+enunciado até 200, legenda da pergunta até 300, rótulo até 60. A `legend` da
+pergunta é o texto exibido ao paciente na hora de responder.
+
+Retorna `201` com o modelo completo (`id`, `status`, perguntas e alternativas com
+seus IDs). Um modelo nasce `draft`.
+
+- `GET /v1/professional/checkin-templates` → `{"templates": [...]}` (não lista arquivados);
+- `GET /v1/professional/checkin-templates/{templateID}` → o modelo;
+- `PUT /v1/professional/checkin-templates/{templateID}` substitui o conteúdo, **apenas enquanto `draft`**;
+- `DELETE /v1/professional/checkin-templates/{templateID}` arquiva e retorna `204`.
+
+Enviar um modelo o publica, e um modelo publicado é imutável: já pode existir dia
+respondido contra aquele enunciado, e alterá-lo reescreveria o significado do
+histórico. Editar depois disso significa criar outro modelo. Tentar editar um
+publicado devolve `409 checkin_template_published`.
+
+### 2. Envio ao paciente
+
+`POST /v1/professional/patients/{connectionID}/checkin-assignments`
+
+```json
+{ "template_id": "..." }
+```
+
+Retorna `201` com a atribuição em `pending`. Um vínculo aceita no máximo 5
+check-ins abertos (`pending` + `active`); acima disso, `409 checkin_limit_reached`.
+Enviar o mesmo modelo duas vezes ao mesmo vínculo com um já aberto devolve
+`409 checkin_conflict`.
+
+- `GET /v1/professional/patients/{connectionID}/checkin-assignments` → `{"assignments": [...]}`;
+- `DELETE /v1/professional/patients/{connectionID}/checkin-assignments/{assignmentID}` revoga e retorna `204` — o check-in some do aplicativo do paciente na mesma hora.
+
+A atribuição devolvida ao profissional traz status, datas e o modelo, mas
+**nunca** `answered_today`, `today_entry` ou contagem de dias respondidos: isso é
+resposta, e resposta só chega por colheita autorizada.
+
+### 3. O check-in na vida do paciente
+
+- `GET /v1/app/checkins?date=YYYY-MM-DD` → `{"checkins": [...]}` com os `active` de todos os vínculos. É o que a tela inicial usa;
+- `GET /v1/app/connections/{connectionID}/checkin-assignments?status=pending,active` → `{"assignments": [...]}`;
+- `POST /v1/app/checkin-assignments/{assignmentID}/accept` → `204`;
+- `POST /v1/app/checkin-assignments/{assignmentID}/decline` → `204`;
+- `DELETE /v1/app/checkin-assignments/{assignmentID}` → `204`, o paciente para de responder quando quiser.
+
+Cada atribuição carrega `professional_display_name`, que é o rótulo obrigatório
+na interface do paciente: ele pode ter mais de um check-in ativo, de
+profissionais diferentes, e precisa saber para quem cada um responde.
+
+Para os `active`, o backend devolve o estado do dia já resolvido:
+`answered_today`, `today_entry` (com as respostas, para reabrir e corrigir),
+`last_entry_date` e `answered_days`. O `date` da query é o dia local do
+aparelho; sem ele, o backend usa o dia UTC.
+
+Responder:
+
+`POST /v1/app/checkins/{assignmentID}/entries` com `Idempotency-Key`
+
+```json
+{
+  "entry_date": "2026-08-26",
+  "answers": [
+    { "question_id": "...", "option_id": "..." }
+  ]
+}
+```
+
+Regras: o check-in precisa estar `active` num vínculo `active`; **todas** as
+perguntas do modelo precisam ser respondidas, uma vez cada; a alternativa precisa
+pertencer à pergunta; e `entry_date` precisa estar a no máximo um dia do agora em
+UTC — a janela cobre qualquer fuso do mundo sem deixar o cliente escolher a data
+de um registro diário. Reenviar o mesmo dia corrige a resposta, não duplica.
+Retorna `201` com o dia gravado.
+
+`GET /v1/app/checkins/{assignmentID}/entries?from=&to=` devolve o histórico do
+próprio paciente (janela máxima de 92 dias).
+
+### 4. Colheita
+
+`POST /v1/professional/patients/{connectionID}/checkin-collection-requests`
+
+```json
+{ "period_start": "2026-08-12", "period_end": "2026-08-26" }
+```
+
+Regras: período de no máximo 92 dias, posterior à ativação do vínculo e não
+futuro. Só um pedido aberto por vínculo — o paciente não acumula fila de
+decisões; um segundo devolve `409 checkin_conflict`. Retorna `201`.
+
+- `GET /v1/professional/patients/{connectionID}/checkin-collection-requests` → `{"requests": [...]}`;
+- `GET /v1/app/connections/{connectionID}/checkin-collection-requests` → o mesmo, do lado do paciente;
+- `POST /v1/app/checkin-collection-requests/{requestID}/decline` → `204`.
+
+O paciente decide **quais** check-ins entram:
+
+`POST /v1/app/checkin-collection-requests/{requestID}/send`
+
+```json
+{ "assignment_ids": ["...", "..."] }
+```
+
+Aceita até 10 check-ins, de qualquer vínculo do próprio paciente. Sem nenhum dia
+respondido no período, `422 checkin_no_entries` — um gráfico de zeros pareceria
+relato de piora. Retorna `200` com `{"request_id", "status": "sent", "checkin_count"}`.
+
+### 5. O que o profissional lê
+
+`GET /v1/professional/patients/{connectionID}/checkin-collections` → `{"collections": [...]}`
+
+```json
+{
+  "id": "...",
+  "connection_id": "...",
+  "request_id": "...",
+  "period_start": "2026-08-12",
+  "period_end": "2026-08-26",
+  "shared_at": "2026-08-26T14:00:00Z",
+  "checkins": [
+    {
+      "assignment_id": "...",
+      "title": "Check-in diário",
+      "legend": "Responda pensando no dia de hoje.",
+      "authored_by_you": true,
+      "period_day_count": 15,
+      "answered_day_count": 11,
+      "average": 2.4,
+      "normalized": 0.6,
+      "questions": [
+        {
+          "question_id": "...",
+          "prompt": "Como estava seu humor hoje?",
+          "position": 1,
+          "average": 3.4,
+          "normalized": 0.6,
+          "score_min": 1,
+          "score_max": 5,
+          "answer_count": 11
+        }
+      ],
+      "days": [
+        { "date": "2026-08-12", "average": 2.5, "normalized": 0.63, "answer_count": 2 }
+      ],
+      "best_day": { "date": "2026-08-19", "average": 4, "normalized": 1, "answer_count": 2 },
+      "worst_day": { "date": "2026-08-14", "average": 0.5, "normalized": 0.13, "answer_count": 2 }
+    }
+  ]
+}
+```
+
+Pontos que o frontend precisa respeitar:
+
+- **Todo número já vem calculado.** Média por pergunta, score do dia, melhor e
+  pior dia e adesão são responsabilidade do backend. O app profissional desenha,
+  não deriva.
+- `normalized` (0 a 1) é a mesma média na régua de 0 a 1. Com a escala fixa de
+  1 a 5 ela é sempre `(average - 1) / 4`; continua no payload porque é o valor
+  que o desenho consome, e porque templates antigos podem ter outra escala.
+  Use `average` com `score_min`/`score_max` para o rótulo textual.
+- `authored_by_you` distingue o check-in que este profissional mandou de um que
+  veio de outro acompanhamento. **Quem autorou o outro nunca é nomeado**: a
+  existência de outro vínculo é informação do paciente, e ele não foi perguntado
+  sobre revelá-la.
+- Com um único dia respondido, `best_day` e `worst_day` apontam para o mesmo dia.
+  A interface precisa dizer isso, não fingir que houve variação.
+- O retrato é congelado no aceite. Se o paciente depois apagar o check-in ou
+  corrigir um dia, o que já foi entregue continua exatamente como foi entregue.
+
+### Erros específicos
+
+`402 subscription_required`, `403 checkin_forbidden`, `409 profile_incomplete`,
+`409 checkin_template_published`, `409 checkin_limit_reached`,
+`409 checkin_conflict`, `409 checkin_request_resolved`,
+`422 checkin_no_entries`, `422 validation_failed`.
+
 ## Fora do MVP funcional atual
 
 Cobrança real, gestão de clínicas/membros, upload e verificação documental, notificações e preferências ainda não possuem rotas. Os planos e a estrutura de organização já existem no domínio para essas próximas etapas.
