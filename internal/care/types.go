@@ -54,6 +54,7 @@ type Invitation struct {
 	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	InvitationToken string     `json:"invitation_token,omitempty"`
+	InvitationURL   string     `json:"invitation_url,omitempty"`
 }
 
 type InvitationPreview struct {

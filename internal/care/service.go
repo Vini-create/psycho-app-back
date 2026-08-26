@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/mail"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -28,6 +29,7 @@ var validSharingScopes = map[string]struct{}{
 type ServiceConfig struct {
 	InvitationTTL        time.Duration
 	ConsentPolicyVersion string
+	PatientAppURL        string
 }
 
 type Service struct {
@@ -46,6 +48,12 @@ func NewService(repository *Repository, config ServiceConfig) (*Service, error) 
 	if strings.TrimSpace(config.ConsentPolicyVersion) == "" ||
 		len(config.ConsentPolicyVersion) > 64 {
 		return nil, fmt.Errorf("valid consent policy version is required")
+	}
+	config.PatientAppURL = strings.TrimRight(strings.TrimSpace(config.PatientAppURL), "/")
+	patientAppURL, err := url.Parse(config.PatientAppURL)
+	if err != nil || patientAppURL.Scheme == "" || patientAppURL.Host == "" ||
+		(patientAppURL.Scheme != "http" && patientAppURL.Scheme != "https") {
+		return nil, fmt.Errorf("valid patient application URL is required")
 	}
 	return &Service{repository: repository, config: config, now: time.Now}, nil
 }
@@ -87,6 +95,10 @@ func (s *Service) CreateInvitation(
 	if err != nil {
 		return Invitation{}, err
 	}
+	invitationURL, err := buildInvitationURL(s.config.PatientAppURL, rawToken)
+	if err != nil {
+		return Invitation{}, fmt.Errorf("build invitation URL: %w", err)
+	}
 	now := s.now().UTC()
 	invitation, err := s.repository.CreateInvitation(
 		ctx,
@@ -100,6 +112,7 @@ func (s *Service) CreateInvitation(
 		return Invitation{}, err
 	}
 	invitation.InvitationToken = rawToken
+	invitation.InvitationURL = invitationURL
 	return invitation, nil
 }
 
@@ -306,6 +319,10 @@ func newInvitationToken() (string, string, error) {
 func hashInvitationToken(raw string) string {
 	digest := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(digest[:])
+}
+
+func buildInvitationURL(patientAppURL, rawToken string) (string, error) {
+	return url.JoinPath(patientAppURL, "convite", rawToken)
 }
 
 func maskEmail(email string) string {

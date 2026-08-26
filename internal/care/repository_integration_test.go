@@ -65,6 +65,7 @@ func TestCareFlowIntegration(t *testing.T) {
 
 	service, err := NewService(NewRepository(pool), ServiceConfig{
 		InvitationTTL: 7 * 24 * time.Hour, ConsentPolicyVersion: "integration-v1",
+		PatientAppURL: "https://app.example.com",
 	})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)

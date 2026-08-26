@@ -740,7 +740,7 @@ Todas as rotas profissionais abaixo exigem access token `professional` e sessão
 
 ### Convites
 
-- `POST /v1/professional/invitations` com `{"email":"paciente@exemplo.com"}` retorna `201` e o `invitation_token`. O frontend monta seu próprio link, por exemplo `/convite/{invitation_token}`.
+- `POST /v1/professional/invitations` com `{"email":"paciente@exemplo.com"}` retorna `201`, `invitation_token` e `invitation_url`. O backend monta a URL completa com `EMAIL_PATIENT_APP_URL`; o frontend apenas exibe ou copia `invitation_url`.
 - `GET /v1/professional/invitations` retorna `{"invitations": [...]}`.
 - `DELETE /v1/professional/invitations/{invitationID}` retorna `204`.
 - `GET /v1/app/invitations/{token}` é público e retorna somente nome/profissão/organização, e-mail mascarado e expiração.

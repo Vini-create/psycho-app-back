@@ -157,6 +157,7 @@ func run() error {
 		care.ServiceConfig{
 			InvitationTTL:        cfg.App.InvitationTTL,
 			ConsentPolicyVersion: cfg.App.ConsentPolicyVersion,
+			PatientAppURL:        cfg.Email.PatientAppURL,
 		},
 	)
 	if err != nil {
