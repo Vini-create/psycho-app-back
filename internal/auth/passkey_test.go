@@ -1,11 +1,27 @@
 package auth
 
 import (
+	"regexp"
 	"testing"
 	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 )
+
+func TestDeviceConfirmationCodeIsStableAndNonSecret(t *testing.T) {
+	first := deviceConfirmationCode("opaque-scan-token")
+	second := deviceConfirmationCode("opaque-scan-token")
+
+	if first != second {
+		t.Fatalf("deviceConfirmationCode() = %q then %q, want stable code", first, second)
+	}
+	if !regexp.MustCompile(`^[0-9]{6}$`).MatchString(first) {
+		t.Fatalf("deviceConfirmationCode() = %q, want six digits", first)
+	}
+	if first == deviceConfirmationCode("different-scan-token") {
+		t.Fatal("deviceConfirmationCode() returned the same code for distinct fixtures")
+	}
+}
 
 func TestNewPasskeyManagerUsesStrictSecurityDefaults(t *testing.T) {
 	cipher, err := NewSecretCipher(make([]byte, 32))

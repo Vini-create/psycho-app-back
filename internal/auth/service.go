@@ -547,6 +547,79 @@ func (s *Service) FinishPasskeyAuthentication(
 	return tokens, nil
 }
 
+func (s *Service) PreviewDeviceAuthorization(
+	ctx context.Context,
+	scanToken string,
+) (DeviceAuthorizationPreview, error) {
+	return s.passkeys.PreviewDeviceAuthorization(ctx, scanToken)
+}
+
+func (s *Service) ApproveDeviceAuthorization(
+	ctx context.Context,
+	scanToken string,
+	credentialResponse []byte,
+	client ClientInfo,
+) error {
+	professionalUserID, err := s.passkeys.ApproveDeviceAuthorization(
+		ctx, scanToken, credentialResponse, client,
+	)
+	if err != nil {
+		s.recordEvent(ctx, Event{
+			Audience: AudienceProfessional, Type: "passkey_authentication",
+			Outcome: "failure", Client: client,
+		})
+		return err
+	}
+	s.recordEvent(ctx, Event{
+		Audience: AudienceProfessional, AccountID: professionalUserID,
+		Type: "passkey_authentication", Outcome: "success", Client: client,
+	})
+	return nil
+}
+
+func (s *Service) ConsumeDeviceAuthorization(
+	ctx context.Context,
+	pollToken string,
+	client ClientInfo,
+) (TokenPair, error) {
+	if pollToken == "" {
+		return TokenPair{}, ErrInvalidInput
+	}
+	refreshToken, err := randomToken(32)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	now := s.now().UTC()
+	sessionID, professionalUserID, err := s.repository.ConsumeDeviceAuthorizationAndCreateSession(
+		ctx,
+		hashToken(pollToken),
+		hashToken(refreshToken),
+		now.Add(s.config.RefreshTokenTTL),
+		client,
+		now,
+	)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	accessToken, accessExpiresAt, err := s.accessTokens.Issue(Principal{
+		AccountID: professionalUserID,
+		SessionID: sessionID,
+		Audience:  AudienceProfessional,
+		MFA:       true,
+	})
+	if err != nil {
+		return TokenPair{}, err
+	}
+	s.recordEvent(ctx, Event{
+		Audience: AudienceProfessional, AccountID: professionalUserID,
+		SessionID: sessionID, Type: "login", Outcome: "success", Client: client,
+	})
+	return TokenPair{
+		AccessToken: accessToken, RefreshToken: refreshToken,
+		TokenType: "Bearer", ExpiresAt: accessExpiresAt,
+	}, nil
+}
+
 func (s *Service) RecoverPasskeyAuthentication(
 	ctx context.Context,
 	ceremonyToken string,

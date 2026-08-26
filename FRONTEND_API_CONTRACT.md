@@ -412,6 +412,12 @@ Após senha correta, o login retorna `200` sem tokens:
       "allowCredentials": [],
       "timeout": 300000,
       "userVerification": "required"
+    },
+    "device_authorization": {
+      "scan_token": "token-opaco-exclusivo-do-qr",
+      "poll_token": "token-opaco-exclusivo-do-desktop",
+      "confirmation_code": "482917",
+      "expires_at": "2026-08-26T14:05:00Z"
     }
   }
 }
@@ -442,7 +448,35 @@ Depois chame `POST /v1/professional/auth/passkeys/authentication/verify`:
 
 Resposta `200`: objeto de token emitido. O refresh cookie profissional também será criado.
 
-Se o navegador oferecer “usar outro dispositivo”, poderá mostrar um QR code para aprovação no celular. Isso é um fluxo WebAuthn híbrido nativo; o frontend não cria o QR code.
+### Autorizar o desktop pela passkey do celular
+
+Quando o transporte híbrido nativo do navegador não estiver disponível, use os
+dois portadores independentes de `device_authorization`:
+
+1. O desktop monta uma URL da própria aplicação profissional no formato
+   `/autorizar-dispositivo#<scan_token>` e gera o QR localmente. Use fragmento,
+   não query string: o servidor da página e o cabeçalho `Referer` não recebem o
+   token. O `poll_token` nunca entra no QR e permanece apenas em memória.
+   Mostre `confirmation_code` no desktop.
+2. O celular remove imediatamente o fragmento da barra e chama
+   `POST /v1/professional/auth/device-authorizations/preview` com
+   `{"scan_token":"..."}`. A resposta contém `public_key`,
+   `confirmation_code` e `expires_at`. O celular deve pedir que a pessoa
+   compare esse código com o desktop antes de autorizar.
+3. Depois de `startAuthentication`, o celular chama
+   `POST /v1/professional/auth/device-authorizations/approve` com o
+   `scan_token` e a credencial WebAuthn. A resposta é `204`; nenhuma sessão é
+   emitida para o celular.
+4. A cada dois segundos, o desktop chama
+   `POST /v1/professional/auth/device-authorizations/consume` com
+   `{"poll_token":"..."}`. Enquanto aguarda, recebe `202` e
+   `{"status":"pending"}`. Após aprovação, recebe `200` com o access token e
+   o refresh cookie HttpOnly da nova sessão MFA.
+
+O desafio expira junto com a cerimônia WebAuthn, cada portador tem 256 bits
+aleatórios e tanto a aprovação quanto o consumo são atômicos e de uso único.
+O QR não contém senha, passkey, token de sessão, e-mail ou identificador da
+conta. A chave privada permanece no autenticador do celular.
 
 ### Entrar com código de recuperação
 

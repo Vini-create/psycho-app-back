@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -56,8 +57,22 @@ func (u passkeyUser) WebAuthnCredentials() []webauthn.Credential {
 }
 
 type PasskeyCeremony struct {
-	CeremonyToken string `json:"ceremony_token"`
-	PublicKey     any    `json:"public_key"`
+	CeremonyToken       string                        `json:"ceremony_token"`
+	PublicKey           any                           `json:"public_key"`
+	DeviceAuthorization *DeviceAuthorizationChallenge `json:"device_authorization,omitempty"`
+}
+
+type DeviceAuthorizationChallenge struct {
+	ScanToken        string    `json:"scan_token"`
+	PollToken        string    `json:"poll_token"`
+	ConfirmationCode string    `json:"confirmation_code"`
+	ExpiresAt        time.Time `json:"expires_at"`
+}
+
+type DeviceAuthorizationPreview struct {
+	PublicKey        any       `json:"public_key"`
+	ConfirmationCode string    `json:"confirmation_code"`
+	ExpiresAt        time.Time `json:"expires_at"`
 }
 
 type PasskeyRegistrationResult struct {
@@ -148,7 +163,7 @@ func (m *PasskeyManager) BeginRegistration(
 		return PasskeyCeremony{}, fmt.Errorf("begin passkey registration: %w", err)
 	}
 
-	ceremonyToken, err := m.storeCeremony(
+	ceremonyToken, _, _, err := m.storeCeremony(
 		ctx,
 		professionalUserID,
 		webAuthnPurposeRegistration,
@@ -275,7 +290,7 @@ func (m *PasskeyManager) BeginAuthentication(
 		return PasskeyCeremony{}, fmt.Errorf("begin passkey authentication: %w", err)
 	}
 
-	ceremonyToken, err := m.storeCeremony(
+	ceremonyToken, ceremonyID, expiresAt, err := m.storeCeremony(
 		ctx,
 		professionalUserID,
 		webAuthnPurposeAuthentication,
@@ -285,11 +300,122 @@ func (m *PasskeyManager) BeginAuthentication(
 	if err != nil {
 		return PasskeyCeremony{}, err
 	}
+	scanToken, err := randomToken(32)
+	if err != nil {
+		return PasskeyCeremony{}, err
+	}
+	pollToken, err := randomToken(32)
+	if err != nil {
+		return PasskeyCeremony{}, err
+	}
+	publicKey, err := json.Marshal(assertion.Response)
+	if err != nil {
+		return PasskeyCeremony{}, fmt.Errorf("encode device authorization options: %w", err)
+	}
+	if err := m.repository.CreateDeviceAuthorization(
+		ctx,
+		ceremonyID,
+		professionalUserID,
+		hashToken(scanToken),
+		hashToken(pollToken),
+		deviceConfirmationCode(scanToken),
+		publicKey,
+		expiresAt,
+	); err != nil {
+		return PasskeyCeremony{}, err
+	}
 
 	return PasskeyCeremony{
 		CeremonyToken: ceremonyToken,
 		PublicKey:     assertion.Response,
+		DeviceAuthorization: &DeviceAuthorizationChallenge{
+			ScanToken:        scanToken,
+			PollToken:        pollToken,
+			ConfirmationCode: deviceConfirmationCode(scanToken),
+			ExpiresAt:        expiresAt,
+		},
 	}, nil
+}
+
+func (m *PasskeyManager) PreviewDeviceAuthorization(
+	ctx context.Context,
+	scanToken string,
+) (DeviceAuthorizationPreview, error) {
+	if scanToken == "" {
+		return DeviceAuthorizationPreview{}, ErrInvalidInput
+	}
+	stored, err := m.repository.GetDeviceAuthorizationByScanToken(
+		ctx, hashToken(scanToken), m.now().UTC(),
+	)
+	if err != nil {
+		return DeviceAuthorizationPreview{}, err
+	}
+	var publicKey any
+	if err := json.Unmarshal(stored.PublicKey, &publicKey); err != nil {
+		return DeviceAuthorizationPreview{}, fmt.Errorf("decode device authorization options: %w", err)
+	}
+	return DeviceAuthorizationPreview{
+		PublicKey:        publicKey,
+		ConfirmationCode: stored.ConfirmationCode,
+		ExpiresAt:        stored.ExpiresAt,
+	}, nil
+}
+
+func deviceConfirmationCode(scanToken string) string {
+	digest := sha256.Sum256([]byte(scanToken))
+	value := (int(digest[0])<<16 | int(digest[1])<<8 | int(digest[2])) % 1_000_000
+	return fmt.Sprintf("%06d", value)
+}
+
+func (m *PasskeyManager) ApproveDeviceAuthorization(
+	ctx context.Context,
+	scanToken string,
+	credentialResponse json.RawMessage,
+	client ClientInfo,
+) (string, error) {
+	if scanToken == "" || len(credentialResponse) == 0 {
+		return "", ErrInvalidInput
+	}
+	now := m.now().UTC()
+	device, err := m.repository.GetDeviceAuthorizationByScanToken(
+		ctx, hashToken(scanToken), now,
+	)
+	if err != nil {
+		return "", err
+	}
+	session, err := m.decryptSession(device.SessionDataCiphertext)
+	if err != nil {
+		return "", err
+	}
+	user, _, err := m.loadUser(ctx, device.ProfessionalUserID)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := protocol.ParseCredentialRequestResponseBytes(credentialResponse)
+	if err != nil {
+		return "", ErrInvalidToken
+	}
+	credential, err := m.webAuthn.ValidateLogin(user, session, parsed)
+	if err != nil {
+		return "", ErrInvalidToken
+	}
+	credentialCiphertext, err := m.encryptCredential(*credential)
+	if err != nil {
+		return "", err
+	}
+	if err := m.repository.CompleteDeviceAuthorizationAuthentication(
+		ctx,
+		device.ID,
+		device.CeremonyID,
+		device.ProfessionalUserID,
+		credential.ID,
+		credentialCiphertext,
+		client,
+		now,
+	); err != nil {
+		return "", err
+	}
+	return device.ProfessionalUserID, nil
 }
 
 func (m *PasskeyManager) FinishAuthentication(
@@ -481,18 +607,18 @@ func (m *PasskeyManager) storeCeremony(
 	purpose string,
 	session *webauthn.SessionData,
 	client ClientInfo,
-) (string, error) {
+) (string, string, time.Time, error) {
 	encodedSession, err := json.Marshal(session)
 	if err != nil {
-		return "", fmt.Errorf("encode WebAuthn session: %w", err)
+		return "", "", time.Time{}, fmt.Errorf("encode WebAuthn session: %w", err)
 	}
 	encryptedSession, err := m.cipher.Encrypt(encodedSession)
 	if err != nil {
-		return "", err
+		return "", "", time.Time{}, err
 	}
 	ceremonyToken, err := randomToken(32)
 	if err != nil {
-		return "", err
+		return "", "", time.Time{}, err
 	}
 
 	now := m.now().UTC()
@@ -500,7 +626,7 @@ func (m *PasskeyManager) storeCeremony(
 	if session.Expires.Before(expiresAt) {
 		expiresAt = session.Expires
 	}
-	if err := m.repository.CreateWebAuthnCeremony(
+	ceremonyID, err := m.repository.CreateWebAuthnCeremony(
 		ctx,
 		professionalUserID,
 		purpose,
@@ -509,11 +635,12 @@ func (m *PasskeyManager) storeCeremony(
 		expiresAt,
 		client,
 		now,
-	); err != nil {
-		return "", err
+	)
+	if err != nil {
+		return "", "", time.Time{}, err
 	}
 
-	return ceremonyToken, nil
+	return ceremonyToken, ceremonyID, expiresAt, nil
 }
 
 func (m *PasskeyManager) decryptSession(ciphertext []byte) (webauthn.SessionData, error) {

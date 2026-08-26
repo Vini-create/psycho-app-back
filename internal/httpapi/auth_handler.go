@@ -30,6 +30,7 @@ type AuthHandler struct {
 	loginIdentityLimiter *fixedWindowLimiter
 	tokenIPLimiter       *fixedWindowLimiter
 	tokenIdentityLimiter *fixedWindowLimiter
+	devicePollLimiter    *fixedWindowLimiter
 }
 
 func NewAuthHandler(service *auth.Service, config AuthHandlerConfig) *AuthHandler {
@@ -46,6 +47,7 @@ func NewAuthHandler(service *auth.Service, config AuthHandlerConfig) *AuthHandle
 		loginIdentityLimiter: newFixedWindowLimiter(10, time.Minute),
 		tokenIPLimiter:       newFixedWindowLimiter(20, time.Minute),
 		tokenIdentityLimiter: newFixedWindowLimiter(5, time.Minute),
+		devicePollLimiter:    newFixedWindowLimiter(45, time.Minute),
 	}
 }
 
@@ -86,6 +88,18 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, audience auth.Audience)
 		mux.HandleFunc(
 			"POST "+authPrefix+"/passkeys/authentication/recovery",
 			h.recoverPasskeyAuthentication,
+		)
+		mux.HandleFunc(
+			"POST "+authPrefix+"/device-authorizations/preview",
+			h.previewDeviceAuthorization,
+		)
+		mux.HandleFunc(
+			"POST "+authPrefix+"/device-authorizations/approve",
+			h.approveDeviceAuthorization,
+		)
+		mux.HandleFunc(
+			"POST "+authPrefix+"/device-authorizations/consume",
+			h.consumeDeviceAuthorization,
 		)
 		mux.HandleFunc(
 			"GET "+authPrefix+"/passkeys",
@@ -526,6 +540,82 @@ func (h *AuthHandler) recoverPasskeyAuthentication(w http.ResponseWriter, r *htt
 	result, err := h.service.RecoverPasskeyAuthentication(
 		r.Context(), body.CeremonyToken, body.RecoveryCode, clientInfo(r),
 	)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	h.setRefreshCookie(w, auth.AudienceProfessional, result.RefreshToken)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *AuthHandler) previewDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		ScanToken string `json:"scan_token"`
+	}
+	var body request
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+		return
+	}
+	if !h.loginAllowed(r, auth.AudienceProfessional, body.ScanToken) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many authorization attempts")
+		return
+	}
+	result, err := h.service.PreviewDeviceAuthorization(r.Context(), body.ScanToken)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *AuthHandler) approveDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		ScanToken  string          `json:"scan_token"`
+		Credential json.RawMessage `json:"credential"`
+	}
+	var body request
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+		return
+	}
+	if !h.loginAllowed(r, auth.AudienceProfessional, body.ScanToken) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many authorization attempts")
+		return
+	}
+	if err := h.service.ApproveDeviceAuthorization(
+		r.Context(), body.ScanToken, body.Credential, clientInfo(r),
+	); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AuthHandler) consumeDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		PollToken string `json:"poll_token"`
+	}
+	var body request
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body contains invalid JSON")
+		return
+	}
+	_, identityKey := rateLimitKeys(r, auth.AudienceProfessional, body.PollToken)
+	if !h.devicePollLimiter.Allow(identityKey) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many authorization checks")
+		return
+	}
+	result, err := h.service.ConsumeDeviceAuthorization(
+		r.Context(), body.PollToken, clientInfo(r),
+	)
+	if errors.Is(err, auth.ErrDeviceAuthorizationPending) {
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending"})
+		return
+	}
 	if err != nil {
 		h.handleServiceError(w, err)
 		return

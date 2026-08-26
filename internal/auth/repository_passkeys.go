@@ -96,10 +96,10 @@ func (r *Repository) CreateWebAuthnCeremony(
 	expiresAt time.Time,
 	client ClientInfo,
 	now time.Time,
-) error {
+) (string, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin WebAuthn ceremony transaction: %w", err)
+		return "", fmt.Errorf("begin WebAuthn ceremony transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -110,10 +110,11 @@ func (r *Repository) CreateWebAuthnCeremony(
 		  AND purpose = $2
 		  AND consumed_at IS NULL
 	`, professionalUserID, purpose, now); err != nil {
-		return fmt.Errorf("invalidate previous WebAuthn ceremonies: %w", err)
+		return "", fmt.Errorf("invalidate previous WebAuthn ceremonies: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx, `
+	var ceremonyID string
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO professional_webauthn_ceremonies (
 			professional_user_id,
 			purpose,
@@ -124,6 +125,7 @@ func (r *Repository) CreateWebAuthnCeremony(
 			expires_at
 		)
 		VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet, NULLIF($6, ''), $7)
+		RETURNING id::text
 	`,
 		professionalUserID,
 		purpose,
@@ -132,15 +134,15 @@ func (r *Repository) CreateWebAuthnCeremony(
 		client.IPAddress,
 		client.UserAgent,
 		expiresAt,
-	); err != nil {
-		return fmt.Errorf("insert WebAuthn ceremony: %w", err)
+	).Scan(&ceremonyID); err != nil {
+		return "", fmt.Errorf("insert WebAuthn ceremony: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit WebAuthn ceremony transaction: %w", err)
+		return "", fmt.Errorf("commit WebAuthn ceremony transaction: %w", err)
 	}
 
-	return nil
+	return ceremonyID, nil
 }
 
 func (r *Repository) GetWebAuthnCeremony(
