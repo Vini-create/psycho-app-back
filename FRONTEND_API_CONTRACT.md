@@ -260,7 +260,10 @@ Resposta `200`:
 }
 ```
 
-`plan` existe apenas para contas `app`.
+`plan` existe para contas `app` e `professional`. Para pacientes, os códigos
+vigentes são `free` e `plus`. Durante a validação inicial, toda conta
+profissional recebe `pro`; o backend continua sendo a autoridade sobre as
+permissões efetivas.
 
 `PATCH /v1/{audience}/me`
 
@@ -757,7 +760,10 @@ Todas as rotas profissionais abaixo exigem access token `professional` e sessão
 
 `GET /v1/professional/profile` retorna o perfil, organização solo, membership e plano. Antes do onboarding retorna `404 not_found`.
 
-`PUT /v1/professional/profile` cria ou atualiza o perfil e, na primeira chamada, provisiona atomicamente a organização solo, membership de owner e assinatura trial `single`:
+O workspace profissional (organização solo, membership de owner e plano Pro
+ativo) é provisionado atomicamente no cadastro da conta. Contas anteriores à
+migração também recebem esse workspace e o Pro ativo. O
+`PUT /v1/professional/profile` cria ou atualiza somente os dados profissionais:
 
 ```json
 {
@@ -771,6 +777,8 @@ Todas as rotas profissionais abaixo exigem access token `professional` e sessão
 ```
 
 `profession_type`: `psychologist`, `psychiatrist`, `psychoanalyst`, `therapist`, `psychotherapist`, `occupational_therapist`, `counselor` ou `other`. País, região e número de registro são obrigatórios para concluir o onboarding. `bio` tem até 2.000 caracteres; são permitidas até 50 certificações de 200 caracteres cada.
+
+O campo `plan` do perfil tem formato `{"code":"pro","status":"active"}`.
 
 ### Convites
 

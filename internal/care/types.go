@@ -27,22 +27,27 @@ type ProfessionalProfileInput struct {
 	Certifications          []string
 }
 
+type ProfessionalPlan struct {
+	Code   string `json:"code"`
+	Status string `json:"status"`
+}
+
 type ProfessionalProfile struct {
-	ProfessionalUserID      string   `json:"professional_user_id"`
-	DisplayName             string   `json:"display_name"`
-	Email                   string   `json:"email"`
-	ProfessionType          string   `json:"profession_type"`
-	RegistrationCountryCode *string  `json:"registration_country_code,omitempty"`
-	RegistrationRegion      *string  `json:"registration_region,omitempty"`
-	RegistrationNumber      *string  `json:"registration_number,omitempty"`
-	Bio                     *string  `json:"bio,omitempty"`
-	Certifications          []string `json:"certifications"`
-	VerificationStatus      string   `json:"verification_status"`
-	OrganizationID          string   `json:"organization_id"`
-	OrganizationName        string   `json:"organization_name"`
-	MembershipID            string   `json:"membership_id"`
-	Plan                    string   `json:"plan"`
-	OnboardingComplete      bool     `json:"onboarding_complete"`
+	ProfessionalUserID      string           `json:"professional_user_id"`
+	DisplayName             string           `json:"display_name"`
+	Email                   string           `json:"email"`
+	ProfessionType          string           `json:"profession_type"`
+	RegistrationCountryCode *string          `json:"registration_country_code,omitempty"`
+	RegistrationRegion      *string          `json:"registration_region,omitempty"`
+	RegistrationNumber      *string          `json:"registration_number,omitempty"`
+	Bio                     *string          `json:"bio,omitempty"`
+	Certifications          []string         `json:"certifications"`
+	VerificationStatus      string           `json:"verification_status"`
+	OrganizationID          string           `json:"organization_id"`
+	OrganizationName        string           `json:"organization_name"`
+	MembershipID            string           `json:"membership_id"`
+	Plan                    ProfessionalPlan `json:"plan"`
+	OnboardingComplete      bool             `json:"onboarding_complete"`
 }
 
 type Invitation struct {

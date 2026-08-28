@@ -46,6 +46,11 @@ func (r *Repository) CreateAccount(
 		}
 		return "", fmt.Errorf("insert account: %w", err)
 	}
+	if audience == AudienceProfessional {
+		if err := ensureProfessionalWorkspace(ctx, tx, accountID, displayName); err != nil {
+			return "", err
+		}
+	}
 
 	insertTokenQuery := fmt.Sprintf(`
 		INSERT INTO auth_one_time_tokens (
@@ -131,6 +136,17 @@ func (r *Repository) FindAccountByID(
 	planExpression := "''"
 	if audience == AudienceApp {
 		planExpression = "account.plan"
+	} else if audience == AudienceProfessional {
+		planExpression = `COALESCE((
+			SELECT subscription.plan
+			FROM organization_memberships AS membership
+			JOIN subscriptions AS subscription
+			  ON subscription.organization_id = membership.organization_id
+			WHERE membership.professional_user_id = account.id
+			  AND membership.status = 'active'
+			ORDER BY membership.created_at
+			LIMIT 1
+		), '')`
 	}
 	query := fmt.Sprintf(`
 		SELECT account.id::text, account.email, account.password_hash,
@@ -168,6 +184,50 @@ func (r *Repository) FindAccountByID(
 	}
 
 	return account, nil
+}
+
+func ensureProfessionalWorkspace(
+	ctx context.Context,
+	tx pgx.Tx,
+	professionalUserID string,
+	displayName string,
+) error {
+	var activeMembershipExists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM organization_memberships
+			WHERE professional_user_id = $1 AND status = 'active'
+		)
+	`, professionalUserID).Scan(&activeMembershipExists); err != nil {
+		return fmt.Errorf("check professional workspace: %w", err)
+	}
+	if activeMembershipExists {
+		return nil
+	}
+
+	var organizationID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO organizations (name, kind)
+		VALUES ($1, 'solo')
+		RETURNING id::text
+	`, "Consultório de "+displayName).Scan(&organizationID); err != nil {
+		return fmt.Errorf("create professional organization: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_memberships (
+			organization_id, professional_user_id, role, status, joined_at
+		)
+		VALUES ($1, $2, 'owner', 'active', now())
+	`, organizationID, professionalUserID); err != nil {
+		return fmt.Errorf("create professional membership: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO subscriptions (organization_id, provider, plan, status)
+		VALUES ($1, 'internal', 'pro', 'active')
+	`, organizationID); err != nil {
+		return fmt.Errorf("grant professional Pro plan: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) UpdateDisplayName(

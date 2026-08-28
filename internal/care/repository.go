@@ -109,9 +109,9 @@ func (r *Repository) UpsertProfessionalProfile(
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO subscriptions (organization_id, provider, plan, status)
-			VALUES ($1, 'internal', 'single', 'trialing')
+			VALUES ($1, 'internal', 'pro', 'active')
 		`, organizationID); err != nil {
-			return fmt.Errorf("create trial subscription: %w", err)
+			return fmt.Errorf("grant professional Pro plan: %w", err)
 		}
 	}
 
@@ -132,7 +132,8 @@ func (r *Repository) GetProfessionalProfile(
 		       profile.registration_region, profile.registration_number, profile.bio,
 		       profile.certifications, profile.verification_status,
 		       organization.id::text, organization.name, membership.id::text,
-		       COALESCE(subscription.plan, 'single')
+		       COALESCE(subscription.plan, 'pro'),
+		       COALESCE(subscription.status, 'active')
 		FROM professional_users AS professional
 		JOIN professional_profiles AS profile
 		  ON profile.professional_user_id = professional.id
@@ -158,7 +159,8 @@ func (r *Repository) GetProfessionalProfile(
 		&profile.OrganizationID,
 		&profile.OrganizationName,
 		&profile.MembershipID,
-		&profile.Plan,
+		&profile.Plan.Code,
+		&profile.Plan.Status,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProfessionalProfile{}, ErrNotFound

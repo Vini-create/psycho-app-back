@@ -153,6 +153,11 @@ func (r *Repository) FindOrCreateGoogleAccount(
 			return Account{}, false, fmt.Errorf("insert Google account: %w", err)
 		}
 		created = true
+		if audience == AudienceProfessional {
+			if err := ensureProfessionalWorkspace(ctx, tx, account.ID, account.DisplayName); err != nil {
+				return Account{}, false, err
+			}
+		}
 	} else {
 		return Account{}, false, fmt.Errorf("find account for Google identity: %w", err)
 	}
