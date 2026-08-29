@@ -15,6 +15,7 @@ from app.domain.models import (
     SafetyDecision,
 )
 from app.domain.schemas import ContextItem, ReportCoverage, TimelineEntry
+from app.services.base import ModelPurpose
 
 
 class MockProvider:
@@ -22,6 +23,12 @@ class MockProvider:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+
+    def model_name(self, purpose: ModelPurpose) -> str:
+        return "mock-v1"
+
+    async def aclose(self) -> None:
+        return None
 
     async def moderate(self, text: str) -> ModerationDecision:
         return ModerationDecision(flagged=False)

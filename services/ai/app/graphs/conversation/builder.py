@@ -354,11 +354,7 @@ class ConversationGraphRunner:
         return {"final_content": state["generated"].content.strip(), "route": "normal"}
 
     def _model_name(self, purpose: Literal["conversation", "auxiliary"]) -> str:
-        if self._provider.name != "openai":
-            return "mock-v1"
-        if purpose == "auxiliary":
-            return self._settings.auxiliary_model
-        return self._settings.conversation_model
+        return self._provider.model_name(purpose)
 
 
 def validate_conversation_output(content: str, question_budget: int) -> list[str]:

@@ -45,9 +45,10 @@ rejeitar. O profissional só consulta relatórios aprovados.
 
 ## Providers e versionamento
 
-`AIProvider` desacopla os grafos de OpenAI e mock. Prompts, modelos, schema e versões de grafo
-são persistidos com o relatório/resposta. A troca de modelo não altera handlers ou regras de
-negócio. O mock cobre todos os caminhos sem custo e é o padrão do Compose.
+`AIProvider` desacopla os grafos de OpenAI, DeepInfra e mock. Prompts, modelos, schema e versões
+de grafo são persistidos com o relatório/resposta. A troca de modelo não altera handlers ou
+regras de negócio. O mock cobre todos os caminhos sem custo e é o padrão do Compose. O adapter
+DeepInfra usa a API OpenAI-compatible com `meta-llama/Meta-Llama-3.1-8B-Instruct` por padrão.
 
 Configuração inicial:
 

@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.domain.models import (
     AtomicFacts,
@@ -19,9 +19,15 @@ from app.domain.schemas import (
     ContextResponse,
 )
 
+ModelPurpose = Literal["conversation", "auxiliary", "report"]
+
 
 class AIProvider(Protocol):
     name: str
+
+    def model_name(self, purpose: ModelPurpose) -> str: ...
+
+    async def aclose(self) -> None: ...
 
     async def moderate(self, text: str) -> ModerationDecision: ...
 

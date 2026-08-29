@@ -7,6 +7,7 @@ from app.domain.models import ConversationGenerationInput, ConversationModelOutp
 from app.domain.schemas import CompanionRequest, HistoryMessage
 from app.graphs.conversation.builder import ConversationGraphRunner
 from app.providers.mock import MockProvider
+from app.services.base import ModelPurpose
 
 
 def settings() -> Settings:
@@ -184,6 +185,13 @@ async def test_stream_never_emits_a_sentence_that_breaks_question_budget() -> No
 
 class OpenAINamedMock(CountingProvider):
     name = "openai"
+
+    def model_name(self, purpose: ModelPurpose) -> str:
+        if purpose == "conversation":
+            return self._settings.conversation_model
+        if purpose == "auxiliary":
+            return self._settings.auxiliary_model
+        return self._settings.report_model
 
 
 async def test_security_route_reports_auxiliary_model_provenance() -> None:

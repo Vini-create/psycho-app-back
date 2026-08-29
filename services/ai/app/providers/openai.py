@@ -16,7 +16,7 @@ from app.domain.models import (
     ReportGenerationInput,
     SafetyDecision,
 )
-from app.prompts.companion_v2 import (
+from app.prompts.companion_v3 import (
     SAFETY_PROMPT,
     SECURITY_PROMPT,
     STREAMING_SYSTEM_PROMPT,
@@ -24,6 +24,7 @@ from app.prompts.companion_v2 import (
 )
 from app.prompts.context_v2 import FACT_EXTRACTION_PROMPT
 from app.prompts.context_v2 import SYSTEM_PROMPT as REPORT_SYSTEM_PROMPT
+from app.services.base import ModelPurpose
 
 
 class OpenAIProvider:
@@ -32,6 +33,7 @@ class OpenAIProvider:
     def __init__(self, settings: Settings) -> None:
         if settings.openai_api_key is None:
             raise ValueError("OpenAI API key is required")
+        self._settings = settings
         api_key = settings.openai_api_key.get_secret_value()
         common: dict[str, Any] = {
             "api_key": api_key,
@@ -61,6 +63,19 @@ class OpenAIProvider:
             timeout=settings.request_timeout_seconds,
             max_retries=settings.max_retries,
         )
+
+    def model_name(self, purpose: ModelPurpose) -> str:
+        if purpose == "conversation":
+            return self._settings.conversation_model
+        if purpose == "auxiliary":
+            return self._settings.auxiliary_model
+        return self._settings.report_model
+
+    async def aclose(self) -> None:
+        await self._client.close()
+        await self._conversation_model.root_async_client.close()
+        await self._auxiliary_model.root_async_client.close()
+        await self._report_model.root_async_client.close()
 
     async def moderate(self, text: str) -> ModerationDecision:
         response = await self._client.moderations.create(

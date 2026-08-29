@@ -15,7 +15,9 @@
 - validação de saída contra diagnóstico e dependência emocional;
 - evidências de relatório restritas às mensagens do usuário;
 - consentimento de compartilhamento e revisão do paciente antes da leitura profissional;
-- `store=false` nas chamadas OpenAI.
+- `store=false` nas chamadas OpenAI;
+- adapter DeepInfra sem parâmetros exclusivos da Responses API e sujeito à política de retenção
+  contratada diretamente com a DeepInfra.
 
 Idioma não determina localização. Contatos de emergência não são inventados a partir do idioma;
 o país deve vir de configuração explícita do usuário. Templates atuais orientam procurar o
@@ -38,7 +40,7 @@ esteja disponível.
 - revisão jurídica/LGPD e política por país;
 - aprovação do fluxo de crise por profissionais habilitados;
 - secret manager, rotação de chaves e TLS/mTLS interno;
-- ambiente OpenAI compatível com os requisitos de retenção da empresa;
+- ambiente do provider escolhido compatível com os requisitos de retenção da empresa;
 - testes reais de modelo, red team multilíngue e thresholds de qualidade aprovados;
 - alertas de latência, erro, custo, bloqueios e falha de grounding;
 - runbook de indisponibilidade, incidente e revogação de consentimento.

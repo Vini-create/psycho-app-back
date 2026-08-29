@@ -154,7 +154,6 @@ class ReportGraphRunner:
                 "active_day_count": active_days,
             }
         )
-        model = self._settings.report_model if self._provider.name == "openai" else "mock-v1"
         response = ContextResponse(
             title=draft.title,
             coverage=coverage,
@@ -163,7 +162,7 @@ class ReportGraphRunner:
             items=draft.items,
             limitations=draft.limitations,
             provider=self._provider.name,
-            model=model,
+            model=self._provider.model_name("report"),
             prompt_version=self._settings.context_prompt_version,
             graph_version=self._settings.report_graph_version,
         )

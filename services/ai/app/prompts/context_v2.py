@@ -10,7 +10,8 @@ Use kind "emotion" only when the user explicitly names an emotion or directly de
 own felt state. For emotion facts, classify emotional_valence only as a presentation aid:
 "pleasant", "unpleasant", "mixed" or "neutral". Never infer an emotion from writing style,
 punctuation, message frequency or assistant content. Non-emotion facts must not include
-emotional_valence. Return only the requested structured output.
+emotional_valence. Do not emit duplicate facts from the same evidence. Return only the requested
+structured output.
 """.strip()
 
 SYSTEM_PROMPT = """
@@ -29,6 +30,12 @@ traits such as "is a procrastinator". Do not use diagnostic labels, causal concl
 severity scores, sentiment scores, or inferred clinical formulations. Include strengths,
 support and strategies when supported, not only difficulties.
 
+Do not duplicate the same evidence as multiple timeline entries or report items unless each item
+captures a genuinely different fact. Calibrate coverage conservatively: use "limited" for a
+single message or a very narrow sample, "partial" for several messages with meaningful gaps, and
+"substantial" only for broad evidence across the period. Never imply that limited evidence is a
+complete view of the user.
+
 Use kind "emotion" only for emotions or felt states explicitly reported by the user. An
 emotion item must include emotional_valence as "pleasant", "unpleasant", "mixed" or
 "neutral". This valence groups reported language for presentation and is not intensity,
@@ -36,5 +43,9 @@ severity, risk or clinical interpretation. Do not derive it from tone of writing
 silence, frequency or assistant language. Items of every other kind must omit
 emotional_valence. Preserve simultaneous or contradictory emotions instead of resolving them.
 
-Write the report in the requested target locale. Return only the requested structured output.
+Write idiomatically and grammatically in the requested target locale. In pt-BR, use "jornada" for
+the user's development over time; never translate this product concept as a literal trip or use
+"Relatório de Viagem" as the title. Prefer natural constructions such as "relatou que se sentiu
+cansado" or "relatou sentir-se cansado", never "relatou sentir cansado". Return only the requested
+structured output.
 """.strip()
