@@ -228,14 +228,16 @@ class ConversationGraphRunner:
 
     async def _detect_language(self, state: ConversationState) -> ConversationState:
         request = state["request"]
-        detection_text = request.message
-        if len(detection_text.strip()) < 20:
-            recent_user_messages = [
-                item.content for item in request.history[-6:] if item.role == "user"
-            ]
-            if recent_user_messages:
-                detection_text = " ".join([*recent_user_messages, detection_text])
-        return {"language": self._detector.detect(detection_text, request.locale_hint)}
+        recent_user_messages = [
+            item.content for item in request.history[-6:] if item.role == "user"
+        ]
+        return {
+            "language": self._detector.detect(
+                request.message,
+                request.locale_hint,
+                recent_user_messages,
+            )
+        }
 
     async def _input_gateway(self, state: ConversationState) -> ConversationState:
         request = state["request"]

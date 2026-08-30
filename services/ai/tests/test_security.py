@@ -25,11 +25,16 @@ def test_normal_distress_is_not_treated_as_prompt_injection() -> None:
     assert needs_safety_review("Estou muito cansado e tive um dia difícil.") is False
 
 
-def test_short_message_uses_valid_locale_hint() -> None:
+def test_language_detection_prefers_content_then_history_then_locale() -> None:
     detector = LocalLanguageDetector()
     assert detector.detect("sim", "pt_BR") == "pt-BR"
     assert detector.detect("olá") == "pt-BR"
     assert detector.detect("quem é você") == "pt-BR"
-    assert detector.detect("Bonjour, comment allez-vous aujourd'hui?", "pt-BR") == "pt-BR"
+    assert detector.detect("olá", "en-US") == "pt"
+    assert detector.detect("ola", "en-US") == "pt"
+    assert detector.detect("quem e voce", "fr-FR") == "pt"
+    assert detector.detect("Bonjour, comment allez-vous aujourd'hui?", "pt-BR") == "fr"
+    assert detector.detect("ok", "en-US", ["Estou me sentindo melhor hoje."]) == "pt"
+    assert detector.detect("ok", "es-MX") == "es-MX"
     assert normalize_locale("es_mx") == "es-MX"
     assert normalize_locale("invalid-locale-value") is None
