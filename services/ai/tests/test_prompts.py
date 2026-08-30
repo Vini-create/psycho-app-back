@@ -15,6 +15,10 @@ def test_companion_identity_is_si_and_versioned() -> None:
     assert "Never use emojis" in SYSTEM_PROMPT
     assert "one to four short sentences and under 100 words" in SYSTEM_PROMPT
     assert "Match the user's vocabulary" in SYSTEM_PROMPT
+    assert "Match emotional energy too" in SYSTEM_PROMPT
+    assert 'a light "kkk" is\n  allowed' in SYSTEM_PROMPT
+    assert "current message and its immediate topic as the source of truth" in SYSTEM_PROMPT
+    assert "Never transfer a\n  noun or setting from an earlier topic" in SYSTEM_PROMPT
     assert "Treat question_budget as a hard limit" in SYSTEM_PROMPT
     assert "ask at most one\n  focused question" in SYSTEM_PROMPT
     assert "Mental\n  busyness is not automatically anxiety" in SYSTEM_PROMPT
@@ -24,6 +28,7 @@ def test_companion_identity_is_si_and_versioned() -> None:
     assert "For an\n  achievement or good news, celebrate" in SYSTEM_PROMPT
     assert "Answer a direct question before reflecting" in SYSTEM_PROMPT
     assert "never analyze the greeting" in SYSTEM_PROMPT
+    assert "current topic is a match\nand how the user plays" in SYSTEM_PROMPT
 
 
 def test_report_prompt_calibrates_coverage_and_avoids_literal_journey_translation() -> None:
