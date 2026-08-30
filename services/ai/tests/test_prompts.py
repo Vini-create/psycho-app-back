@@ -22,6 +22,8 @@ def test_companion_identity_is_si_and_versioned() -> None:
     assert "Ask about the closest lived detail" in SYSTEM_PROMPT
     assert "Do not assume fear" in SYSTEM_PROMPT
     assert "For an\n  achievement or good news, celebrate" in SYSTEM_PROMPT
+    assert "Answer a direct question before reflecting" in SYSTEM_PROMPT
+    assert "never analyze the greeting" in SYSTEM_PROMPT
 
 
 def test_report_prompt_calibrates_coverage_and_avoids_literal_journey_translation() -> None:

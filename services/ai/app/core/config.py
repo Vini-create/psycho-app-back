@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     deepinfra_report_max_tokens: int = Field(default=3_072, ge=256, le=16_384)
     deepinfra_conversation_temperature: float = Field(default=0.65, ge=0, le=1)
     deepinfra_structured_temperature: float = Field(default=0.1, ge=0, le=1)
+    default_locale: str = Field(
+        default="pt-BR",
+        pattern=r"^[A-Za-z]{2,3}(?:[-_][A-Za-z]{2})?$",
+    )
     request_timeout_seconds: float = Field(default=15, ge=1, le=60)
     max_retries: int = Field(default=1, ge=0, le=3)
 

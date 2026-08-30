@@ -200,6 +200,7 @@ func (h *ChatHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		r.PathValue("conversationID"),
 		body.Content,
 		r.Header.Get("Idempotency-Key"),
+		preferredLocale(r.Header.Get("Accept-Language")),
 	)
 	if err != nil {
 		h.handleError(w, err)
@@ -299,6 +300,7 @@ func (h *ChatHandler) streamMessage(
 		r.PathValue("conversationID"),
 		content,
 		r.Header.Get("Idempotency-Key"),
+		preferredLocale(r.Header.Get("Accept-Language")),
 		func(delta string) error {
 			return stream.event("assistant.delta", map[string]string{"delta": delta})
 		},
@@ -322,6 +324,7 @@ func (h *ChatHandler) retryMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.RetryMessage(
 		r.Context(), principal.AccountID, r.PathValue("messageID"),
+		preferredLocale(r.Header.Get("Accept-Language")),
 	)
 	if err != nil {
 		h.handleError(w, err)
@@ -350,6 +353,16 @@ func (h *ChatHandler) handleError(w http.ResponseWriter, err error) {
 		slog.Error("chat request failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 	}
+}
+
+func preferredLocale(acceptLanguage string) string {
+	first, _, _ := strings.Cut(acceptLanguage, ",")
+	locale, _, _ := strings.Cut(first, ";")
+	locale = strings.TrimSpace(locale)
+	if len(locale) < 2 || len(locale) > 35 || locale == "*" {
+		return ""
+	}
+	return locale
 }
 
 func parseOptionalInt64(value string) (int64, error) {

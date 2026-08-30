@@ -34,6 +34,7 @@ AI_DEEPINFRA_EXTRACTION_MAX_TOKENS=4096
 AI_DEEPINFRA_REPORT_MAX_TOKENS=3072
 AI_DEEPINFRA_CONVERSATION_TEMPERATURE=0.65
 AI_DEEPINFRA_STRUCTURED_TEMPERATURE=0.1
+AI_DEFAULT_LOCALE=pt-BR
 ```
 
 Os limites de tokens são tetos de geração, não uma reserva cobrada integralmente. Conversa e
@@ -42,6 +43,10 @@ mais espaço porque podem produzir JSON proporcional ao histórico; reduzi-los d
 risco de truncamento e de uma segunda chamada para reparo. A temperatura maior vale somente para
 a fala conversacional. Classificações e demais saídas estruturadas ficam em `0.1` para preservar
 consistência e validade do JSON.
+
+`AI_DEFAULT_LOCALE` é usado somente quando não há `locale_hint` e o texto é curto ou ambíguo.
+Nas chamadas do produto, o backend encaminha o primeiro idioma de `Accept-Language`; isso evita
+que saudações como `olá` sejam classificadas como outro idioma.
 
 O adapter DeepInfra usa Chat Completions e texto puro para conversa e streaming, seguido pelos
 validadores determinísticos locais. Isso evita enviar um JSON Schema grande em cada mensagem e

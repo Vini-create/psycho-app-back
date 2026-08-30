@@ -4,20 +4,25 @@ from lingua import LanguageDetector, LanguageDetectorBuilder
 
 
 class LocalLanguageDetector:
-    def __init__(self, detector: LanguageDetector | None = None) -> None:
+    def __init__(
+        self,
+        detector: LanguageDetector | None = None,
+        default_locale: str = "pt-BR",
+    ) -> None:
         self._detector = detector
+        self._default_locale = normalize_locale(default_locale) or "pt-BR"
 
     def detect(self, text: str, locale_hint: str | None = None) -> str:
         hint = normalize_locale(locale_hint)
-        if len(text.strip()) < 12 and hint is not None:
+        if hint is not None:
             return hint
+        if len(text.strip()) < 20:
+            return self._default_locale
         detector = self._detector or _build_detector()
         language = detector.detect_language_of(text)
         if language is None or language.iso_code_639_1 is None:
-            return hint or "en"
+            return self._default_locale
         code = language.iso_code_639_1.name.lower()
-        if hint is not None and hint.split("-", 1)[0] == code:
-            return hint
         return code
 
 

@@ -51,3 +51,4 @@ def test_production_accepts_deepinfra_with_api_key() -> None:
     assert settings.deepinfra_report_max_tokens == 3_072
     assert settings.deepinfra_conversation_temperature == 0.65
     assert settings.deepinfra_structured_temperature == 0.1
+    assert settings.default_locale == "pt-BR"

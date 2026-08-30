@@ -65,6 +65,7 @@ async def test_deepinfra_generates_structured_and_streaming_conversation() -> No
 
     generated = await provider.generate_conversation(request)
     generation_system_prompt = fake.messages[0].content
+    generation_user_prompt = fake.messages[1].content
     streamed = "".join([chunk async for chunk in provider.stream_conversation(request)])
 
     assert generated == expected
@@ -73,3 +74,6 @@ async def test_deepinfra_generates_structured_and_streaming_conversation() -> No
     assert "Return only the response text" in generation_system_prompt
     assert "Return exactly one valid JSON object" not in generation_system_prompt
     assert "prefer one focused question about that thread" in fake.messages[0].content
+    assert generation_user_prompt.endswith(
+        "CURRENT USER MESSAGE — respond to this message:\nHoje foi difícil."
+    )

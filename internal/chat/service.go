@@ -213,8 +213,9 @@ func (s *Service) SendMessage(
 	conversationID string,
 	content string,
 	idempotencyKey string,
+	localeHint string,
 ) (SendResult, error) {
-	return s.sendMessage(ctx, appUserID, conversationID, content, idempotencyKey, nil)
+	return s.sendMessage(ctx, appUserID, conversationID, content, idempotencyKey, localeHint, nil)
 }
 
 func (s *Service) SendMessageStream(
@@ -223,9 +224,12 @@ func (s *Service) SendMessageStream(
 	conversationID string,
 	content string,
 	idempotencyKey string,
+	localeHint string,
 	onDelta func(string) error,
 ) (SendResult, error) {
-	return s.sendMessage(ctx, appUserID, conversationID, content, idempotencyKey, onDelta)
+	return s.sendMessage(
+		ctx, appUserID, conversationID, content, idempotencyKey, localeHint, onDelta,
+	)
 }
 
 func (s *Service) sendMessage(
@@ -234,6 +238,7 @@ func (s *Service) sendMessage(
 	conversationID string,
 	content string,
 	idempotencyKey string,
+	localeHint string,
 	onDelta func(string) error,
 ) (SendResult, error) {
 	if err := validateMessageInput(conversationID, content, idempotencyKey); err != nil {
@@ -268,13 +273,14 @@ func (s *Service) sendMessage(
 		return s.resultForExistingMessage(ctx, appUserID, userMessage)
 	}
 
-	return s.generateReply(ctx, appUserID, userMessage, onDelta)
+	return s.generateReply(ctx, appUserID, userMessage, localeHint, onDelta)
 }
 
 func (s *Service) RetryMessage(
 	ctx context.Context,
 	appUserID string,
 	messageID string,
+	localeHint string,
 ) (SendResult, error) {
 	if _, err := uuid.Parse(messageID); err != nil {
 		return SendResult{}, ErrInvalidInput
@@ -305,13 +311,14 @@ func (s *Service) RetryMessage(
 	if err != nil {
 		return SendResult{}, err
 	}
-	return s.generateReply(ctx, appUserID, message, nil)
+	return s.generateReply(ctx, appUserID, message, localeHint, nil)
 }
 
 func (s *Service) generateReply(
 	ctx context.Context,
 	appUserID string,
 	userMessage Message,
+	localeHint string,
 	onDelta func(string) error,
 ) (SendResult, error) {
 	historyStored, err := s.repository.ListMessages(
@@ -337,6 +344,7 @@ func (s *Service) generateReply(
 		UserID:         appUserID,
 		Message:        userMessage.Content,
 		History:        history,
+		LocaleHint:     strings.TrimSpace(localeHint),
 	}
 	var response companion.Response
 	if onDelta != nil {

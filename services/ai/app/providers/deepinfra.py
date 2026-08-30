@@ -73,6 +73,15 @@ def _conversation_output(content: str) -> ConversationModelOutput:
     )
 
 
+def _conversation_input(request: ConversationGenerationInput) -> str:
+    context = request.model_dump(exclude={"message"}, mode="json")
+    context_json = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    return (
+        f"Application context JSON:\n{context_json}\n\n"
+        f"CURRENT USER MESSAGE — respond to this message:\n{request.message}"
+    )
+
+
 class DeepInfraProvider:
     """Adapter para o endpoint OpenAI-compatible da DeepInfra.
 
@@ -176,7 +185,7 @@ class DeepInfraProvider:
                 SystemMessage(
                     content=(f"{STREAMING_SYSTEM_PROMPT}\n\n{_conversation_priority(request)}")
                 ),
-                HumanMessage(content=request.model_dump_json()),
+                HumanMessage(content=_conversation_input(request)),
             ]
         )
         return _conversation_output(result.text)
@@ -187,7 +196,7 @@ class DeepInfraProvider:
                 SystemMessage(
                     content=(f"{STREAMING_SYSTEM_PROMPT}\n\n{_conversation_priority(request)}")
                 ),
-                HumanMessage(content=request.model_dump_json()),
+                HumanMessage(content=_conversation_input(request)),
             ]
         ):
             text = chunk.text
@@ -206,7 +215,7 @@ class DeepInfraProvider:
         result = await self._conversation_model.ainvoke(
             [
                 SystemMessage(content=f"{repair_prompt}\n\n{_conversation_priority(request)}"),
-                HumanMessage(content=request.model_dump_json()),
+                HumanMessage(content=_conversation_input(request)),
             ]
         )
         return _conversation_output(result.text)

@@ -40,7 +40,7 @@ class ConversationGraphRunner:
     ) -> None:
         self._provider = provider
         self._settings = settings
-        self._detector = detector or LocalLanguageDetector()
+        self._detector = detector or LocalLanguageDetector(default_locale=settings.default_locale)
         self._graph = self._build_graph()
 
     def _build_graph(
@@ -228,7 +228,14 @@ class ConversationGraphRunner:
 
     async def _detect_language(self, state: ConversationState) -> ConversationState:
         request = state["request"]
-        return {"language": self._detector.detect(request.message, request.locale_hint)}
+        detection_text = request.message
+        if len(detection_text.strip()) < 20:
+            recent_user_messages = [
+                item.content for item in request.history[-6:] if item.role == "user"
+            ]
+            if recent_user_messages:
+                detection_text = " ".join([*recent_user_messages, detection_text])
+        return {"language": self._detector.detect(detection_text, request.locale_hint)}
 
     async def _input_gateway(self, state: ConversationState) -> ConversationState:
         request = state["request"]
