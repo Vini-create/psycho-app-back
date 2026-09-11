@@ -65,3 +65,16 @@ func TestNormalizeProfessionalProfileRequiresRegistration(t *testing.T) {
 		t.Fatalf("normalizeProfessionalProfile(valid) error = %v", err)
 	}
 }
+
+func TestNormalizeProfessionalProfileAllowsMissingRegistrationNumberForOtherProfessions(t *testing.T) {
+	input, err := normalizeProfessionalProfile(ProfessionalProfileInput{
+		ProfessionType: "psychoanalyst", RegistrationCountryCode: "BR",
+		RegistrationRegion: "SP", RegistrationNumber: "",
+	})
+	if err != nil {
+		t.Fatalf("normalizeProfessionalProfile() error = %v", err)
+	}
+	if input.RegistrationNumber != "" {
+		t.Fatalf("RegistrationNumber = %q, want empty", input.RegistrationNumber)
+	}
+}

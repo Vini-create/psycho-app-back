@@ -22,6 +22,10 @@ var validProfessionTypes = map[string]struct{}{
 	"counselor": {}, "other": {},
 }
 
+var professionsRequiringRegistration = map[string]struct{}{
+	"psychologist": {}, "psychiatrist": {}, "occupational_therapist": {},
+}
+
 var validSharingScopes = map[string]struct{}{
 	"summaries": {}, "events": {}, "marked_topics": {},
 }
@@ -254,7 +258,10 @@ func normalizeProfessionalProfile(input ProfessionalProfileInput) (ProfessionalP
 	input.RegistrationRegion = strings.TrimSpace(input.RegistrationRegion)
 	input.RegistrationNumber = strings.TrimSpace(input.RegistrationNumber)
 	input.Bio = strings.TrimSpace(input.Bio)
-	if len(input.RegistrationCountryCode) != 2 || input.RegistrationRegion == "" ||
+	if len(input.RegistrationCountryCode) != 2 || input.RegistrationRegion == "" {
+		return ProfessionalProfileInput{}, ErrInvalidInput
+	}
+	if _, required := professionsRequiringRegistration[input.ProfessionType]; required &&
 		input.RegistrationNumber == "" {
 		return ProfessionalProfileInput{}, ErrInvalidInput
 	}
