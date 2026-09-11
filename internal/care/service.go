@@ -26,6 +26,11 @@ var professionsRequiringRegistration = map[string]struct{}{
 	"psychologist": {}, "psychiatrist": {}, "occupational_therapist": {},
 }
 
+func professionRequiresRegistration(professionType string) bool {
+	_, required := professionsRequiringRegistration[professionType]
+	return required
+}
+
 var validSharingScopes = map[string]struct{}{
 	"summaries": {}, "events": {}, "marked_topics": {},
 }
@@ -261,8 +266,7 @@ func normalizeProfessionalProfile(input ProfessionalProfileInput) (ProfessionalP
 	if len(input.RegistrationCountryCode) != 2 || input.RegistrationRegion == "" {
 		return ProfessionalProfileInput{}, ErrInvalidInput
 	}
-	if _, required := professionsRequiringRegistration[input.ProfessionType]; required &&
-		input.RegistrationNumber == "" {
+	if professionRequiresRegistration(input.ProfessionType) && input.RegistrationNumber == "" {
 		return ProfessionalProfileInput{}, ErrInvalidInput
 	}
 	if utf8.RuneCountInString(input.RegistrationRegion) > 100 ||

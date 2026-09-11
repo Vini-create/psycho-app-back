@@ -171,7 +171,8 @@ func (r *Repository) GetProfessionalProfile(
 	profile.OnboardingComplete = profile.RegistrationCountryCode != nil &&
 		len(strings.TrimSpace(*profile.RegistrationCountryCode)) == 2 &&
 		profile.RegistrationRegion != nil && strings.TrimSpace(*profile.RegistrationRegion) != "" &&
-		profile.RegistrationNumber != nil && strings.TrimSpace(*profile.RegistrationNumber) != ""
+		(!professionRequiresRegistration(profile.ProfessionType) ||
+			(profile.RegistrationNumber != nil && strings.TrimSpace(*profile.RegistrationNumber) != ""))
 	return profile, nil
 }
 

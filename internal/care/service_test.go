@@ -67,14 +67,20 @@ func TestNormalizeProfessionalProfileRequiresRegistration(t *testing.T) {
 }
 
 func TestNormalizeProfessionalProfileAllowsMissingRegistrationNumberForOtherProfessions(t *testing.T) {
-	input, err := normalizeProfessionalProfile(ProfessionalProfileInput{
-		ProfessionType: "psychoanalyst", RegistrationCountryCode: "BR",
-		RegistrationRegion: "SP", RegistrationNumber: "",
-	})
-	if err != nil {
-		t.Fatalf("normalizeProfessionalProfile() error = %v", err)
-	}
-	if input.RegistrationNumber != "" {
-		t.Fatalf("RegistrationNumber = %q, want empty", input.RegistrationNumber)
+	for _, professionType := range []string{
+		"psychoanalyst", "therapist", "psychotherapist", "counselor", "other",
+	} {
+		t.Run(professionType, func(t *testing.T) {
+			input, err := normalizeProfessionalProfile(ProfessionalProfileInput{
+				ProfessionType: professionType, RegistrationCountryCode: "BR",
+				RegistrationRegion: "SP", RegistrationNumber: "",
+			})
+			if err != nil {
+				t.Fatalf("normalizeProfessionalProfile() error = %v", err)
+			}
+			if input.RegistrationNumber != "" {
+				t.Fatalf("RegistrationNumber = %q, want empty", input.RegistrationNumber)
+			}
+		})
 	}
 }

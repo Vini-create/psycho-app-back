@@ -152,7 +152,12 @@ func (r *Repository) ProfessionalConnectionAccess(
 		           profile.professional_user_id IS NOT NULL
 		           AND char_length(btrim(profile.registration_country_code)) = 2
 		           AND char_length(btrim(profile.registration_region)) > 0
-		           AND char_length(btrim(profile.registration_number)) > 0
+		           AND (
+		               profile.profession_type NOT IN (
+		                   'psychologist', 'psychiatrist', 'occupational_therapist'
+		               )
+		               OR char_length(btrim(profile.registration_number)) > 0
+		           )
 		       ), false),
 		       COALESCE(array_agg(consent.scope ORDER BY consent.scope)
 		           FILTER (
