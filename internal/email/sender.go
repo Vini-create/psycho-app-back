@@ -18,6 +18,7 @@ type Message struct {
 	To             string
 	Subject        string
 	HTMLContent    string
+	TextContent    string
 	Tags           []string
 	IdempotencyKey string
 }
@@ -75,11 +76,15 @@ func NewBrevoSender(apiKey, fromName, fromAddress string, timeout time.Duration)
 
 func (s *BrevoSender) Send(ctx context.Context, message Message) (string, error) {
 	payload := map[string]any{
-		"sender":      map[string]string{"name": s.fromName, "email": s.fromAddress},
-		"to":          []map[string]string{{"email": message.To}},
-		"subject":     message.Subject,
-		"htmlContent": message.HTMLContent,
-		"tags":        message.Tags,
+		"sender":  map[string]string{"name": s.fromName, "email": s.fromAddress},
+		"to":      []map[string]string{{"email": message.To}},
+		"subject": message.Subject,
+		"tags":    message.Tags,
+	}
+	if message.TextContent != "" {
+		payload["textContent"] = message.TextContent
+	} else {
+		payload["htmlContent"] = message.HTMLContent
 	}
 	if message.IdempotencyKey != "" {
 		payload["headers"] = map[string]string{"Idempotency-Key": message.IdempotencyKey}

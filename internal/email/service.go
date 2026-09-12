@@ -3,7 +3,6 @@ package email
 import (
 	"context"
 	"fmt"
-	"html"
 	"net/url"
 	"strings"
 	"time"
@@ -106,15 +105,9 @@ func (s *Service) buildMessage(audience, kind, recipient, token string) (Message
 	query.Set("token", token)
 	query.Set("email", recipient)
 	link.RawQuery = query.Encode()
-	escapedLink := html.EscapeString(link.String())
-
-	content := `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#f5f1e8;color:#25211d;font-family:Arial,sans-serif">` +
-		`<div style="max-width:560px;margin:0 auto;padding:40px 24px">` +
-		`<p style="font-size:13px;letter-spacing:.12em;text-transform:uppercase">Sinapsa</p>` +
-		`<h1 style="font-family:Georgia,serif;font-size:32px;line-height:1.15">` + html.EscapeString(title) + `</h1>` +
-		`<p style="font-size:17px;line-height:1.6">` + html.EscapeString(instruction) + `</p>` +
-		`<p style="margin:28px 0"><a href="` + escapedLink + `" style="display:inline-block;padding:14px 22px;background:#25211d;color:#fff;text-decoration:none;border-radius:4px;font-weight:700">` + html.EscapeString(action) + `</a></p>` +
-		`<p style="color:#625b52;font-size:13px;line-height:1.5">` + html.EscapeString(expiry) + `</p>` +
-		`</div></body></html>`
-	return Message{To: recipient, Subject: subject, HTMLContent: content, Tags: []string{"sinapsa", tag, audience}}, nil
+	// Password and verification links must bypass Brevo's HTML click-tracking
+	// redirect. The branded redirect endpoint is external to this service and a
+	// certificate fault there must never make an account recovery link unusable.
+	content := "Sinapsa\n\n" + title + "\n\n" + instruction + "\n\n" + action + ":\n" + link.String() + "\n\n" + expiry
+	return Message{To: recipient, Subject: subject, TextContent: content, Tags: []string{"sinapsa", tag, audience}}, nil
 }

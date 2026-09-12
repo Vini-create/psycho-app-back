@@ -20,6 +20,7 @@ func TestBrevoSenderSend(t *testing.T) {
 			To          []struct{ Email string }
 			Subject     string
 			HTMLContent string `json:"htmlContent"`
+			TextContent string `json:"textContent"`
 			Tags        []string
 			Headers     map[string]string
 		}
@@ -28,7 +29,7 @@ func TestBrevoSenderSend(t *testing.T) {
 		}
 		if payload.Sender.Email != "no-reply@example.com" || len(payload.To) != 1 ||
 			payload.To[0].Email != "person@example.com" || payload.Subject != "Subject" ||
-			payload.HTMLContent != "<p>Hello</p>" || len(payload.Tags) != 1 ||
+			payload.HTMLContent != "<p>Hello</p>" || payload.TextContent != "" || len(payload.Tags) != 1 ||
 			payload.Headers["Idempotency-Key"] != "00000000-0000-4000-8000-000000000001" {
 			t.Fatalf("unexpected payload: %+v", payload)
 		}
@@ -48,6 +49,35 @@ func TestBrevoSenderSend(t *testing.T) {
 	})
 	if err != nil || messageID != "brevo-123" {
 		t.Fatalf("Send() = %q, %v", messageID, err)
+	}
+}
+
+func TestBrevoSenderUsesPlainTextWithoutHTMLTrackingLinks(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload["textContent"] != "https://app.example.com/redefinir-senha?token=abc" {
+			t.Fatalf("textContent = %#v", payload["textContent"])
+		}
+		if _, ok := payload["htmlContent"]; ok {
+			t.Fatal("htmlContent must be omitted for security links")
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"messageId":"brevo-123"}`))
+	}))
+	defer server.Close()
+
+	sender, err := NewBrevoSender("secret-key", "Sinapsa", "no-reply@example.com", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.endpoint = server.URL
+	_, err = sender.Send(context.Background(), Message{To: "person@example.com", TextContent: "https://app.example.com/redefinir-senha?token=abc"})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
 	}
 }
 
