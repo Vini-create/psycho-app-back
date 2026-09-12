@@ -178,6 +178,33 @@ func (r *Repository) CreateConversation(
 	return conversation, nil
 }
 
+func (r *Repository) GetConversation(
+	ctx context.Context,
+	appUserID string,
+	conversationID string,
+) (storedConversation, error) {
+	var conversation storedConversation
+	err := r.pool.QueryRow(ctx, `
+		SELECT id::text, title_ciphertext, status, last_message_at, created_at, updated_at
+		FROM chat_conversations
+		WHERE id = $1 AND app_user_id = $2 AND status = 'active'
+	`, conversationID, appUserID).Scan(
+		&conversation.ID,
+		&conversation.TitleCiphertext,
+		&conversation.Status,
+		&conversation.LastMessageAt,
+		&conversation.CreatedAt,
+		&conversation.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return storedConversation{}, ErrNotFound
+	}
+	if err != nil {
+		return storedConversation{}, fmt.Errorf("get conversation: %w", err)
+	}
+	return conversation, nil
+}
+
 func (r *Repository) ListConversations(
 	ctx context.Context,
 	appUserID string,
@@ -244,6 +271,47 @@ func (r *Repository) RenameConversation(
 		return storedConversation{}, fmt.Errorf("rename conversation: %w", err)
 	}
 	return conversation, nil
+}
+
+func (r *Repository) RenameConversationIfTitleMatches(
+	ctx context.Context,
+	appUserID string,
+	conversationID string,
+	expectedTitleCiphertext []byte,
+	titleCiphertext []byte,
+	now time.Time,
+) (bool, error) {
+	result, err := r.pool.Exec(ctx, `
+		UPDATE chat_conversations
+		SET title_ciphertext = $4, updated_at = $5
+		WHERE id = $1
+		  AND app_user_id = $2
+		  AND status = 'active'
+		  AND title_ciphertext = $3
+	`, conversationID, appUserID, expectedTitleCiphertext, titleCiphertext, now)
+	if err != nil {
+		return false, fmt.Errorf("conditionally rename conversation: %w", err)
+	}
+	return result.RowsAffected() == 1, nil
+}
+
+func (r *Repository) AppUserDisplayName(
+	ctx context.Context,
+	appUserID string,
+) (string, error) {
+	var displayName string
+	err := r.pool.QueryRow(ctx, `
+		SELECT display_name
+		FROM app_users
+		WHERE id = $1 AND status = 'active' AND deleted_at IS NULL
+	`, appUserID).Scan(&displayName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get app user display name: %w", err)
+	}
+	return displayName, nil
 }
 
 func (r *Repository) ArchiveConversation(

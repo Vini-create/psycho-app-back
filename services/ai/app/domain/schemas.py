@@ -20,6 +20,7 @@ class CompanionRequest(StrictModel):
     request_id: UUID
     conversation_id: UUID
     user_id: UUID
+    user_name: str | None = Field(default=None, min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=8_000)
     history: list[HistoryMessage] = Field(default_factory=list, max_length=50)
     locale_hint: str | None = Field(default=None, min_length=2, max_length=35)

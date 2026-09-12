@@ -35,6 +35,7 @@ class CountingProvider(MockProvider):
         self.safety_calls = 0
         self.generation_calls = 0
         self.repair_calls = 0
+        self.last_generation_input: ConversationGenerationInput | None = None
 
     async def moderate(self, text: str):  # type: ignore[no-untyped-def]
         self.moderation_calls += 1
@@ -52,6 +53,7 @@ class CountingProvider(MockProvider):
         self, generation_input: ConversationGenerationInput
     ) -> ConversationModelOutput:
         self.generation_calls += 1
+        self.last_generation_input = generation_input
         return await super().generate_conversation(generation_input)
 
     async def repair_conversation(
@@ -97,6 +99,17 @@ async def test_normal_path_uses_one_paid_generation() -> None:
     assert provider.safety_calls == 0
     assert provider.generation_calls == 1
     assert provider.repair_calls == 0
+
+
+async def test_normal_path_passes_user_name_to_generation() -> None:
+    app_settings = settings()
+    provider = CountingProvider(app_settings)
+    runner = ConversationGraphRunner(provider, app_settings)
+
+    await runner.respond(request("Hoje foi um dia difícil.", user_name="Vini de Paula"))
+
+    assert provider.last_generation_input is not None
+    assert provider.last_generation_input.user_name == "Vini de Paula"
 
 
 class InvalidThenValidProvider(CountingProvider):

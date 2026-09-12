@@ -82,6 +82,7 @@ class ConversationModelOutput(StrictModel):
 
 class ConversationGenerationInput(StrictModel):
     language: str = Field(min_length=2, max_length=35)
+    user_name: str | None = Field(default=None, min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=8_000)
     history: list[dict[str, str]] = Field(default_factory=list, max_length=50)
     question_budget: Literal[0, 1]

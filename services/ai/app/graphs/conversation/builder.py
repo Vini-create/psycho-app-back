@@ -315,6 +315,7 @@ class ConversationGraphRunner:
         )
         return ConversationGenerationInput(
             language=state["language"],
+            user_name=request.user_name,
             message=request.message,
             history=[
                 {

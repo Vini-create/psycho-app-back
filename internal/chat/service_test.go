@@ -47,3 +47,34 @@ func TestValidateMessageInput(t *testing.T) {
 		})
 	}
 }
+
+func TestAutomaticConversationTitle(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{
+			name:    "first representative sentence",
+			message: "Na sexta o Bruno me chamou sobre a proposta. Fiquei aliviada depois.",
+			want:    "Na sexta o Bruno me chamou sobre a proposta",
+		},
+		{
+			name:    "normalizes whitespace",
+			message: "  Meu sono   piorou esta semana  ",
+			want:    "Meu sono piorou esta semana",
+		},
+		{
+			name:    "truncates at a word boundary",
+			message: "Quero conversar sobre uma situação longa no trabalho que começou depois da mudança de equipe e continuou durante toda esta semana",
+			want:    "Quero conversar sobre uma situação longa no trabalho que…",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := automaticConversationTitle(test.message); got != test.want {
+				t.Fatalf("automaticConversationTitle() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

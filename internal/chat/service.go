@@ -17,10 +17,13 @@ import (
 
 const (
 	maxConversationTitleRunes = 120
+	automaticTitleMaxRunes    = 64
 	maxUserMessageRunes       = 8000
 	maxAssistantMessageRunes  = 12000
 	maxHistoryRunes           = 60000
 )
+
+const defaultConversationTitle = "Nova conversa"
 
 type Cipher interface {
 	Encrypt(plaintext []byte) ([]byte, error)
@@ -110,7 +113,7 @@ func (s *Service) CreateConversation(
 ) (Conversation, error) {
 	title = strings.Join(strings.Fields(title), " ")
 	if title == "" {
-		title = "Nova conversa"
+		title = defaultConversationTitle
 	}
 	if utf8.RuneCountInString(title) > maxConversationTitleRunes {
 		return Conversation{}, ErrInvalidInput
@@ -272,6 +275,11 @@ func (s *Service) sendMessage(
 	if !created {
 		return s.resultForExistingMessage(ctx, appUserID, userMessage)
 	}
+	if userMessage.Sequence == 1 {
+		s.maybeSetAutomaticConversationTitle(
+			ctx, appUserID, userMessage.ConversationID, content,
+		)
+	}
 
 	return s.generateReply(ctx, appUserID, userMessage, localeHint, onDelta)
 }
@@ -321,6 +329,13 @@ func (s *Service) generateReply(
 	localeHint string,
 	onDelta func(string) error,
 ) (SendResult, error) {
+	userName, err := s.repository.AppUserDisplayName(ctx, appUserID)
+	if err != nil {
+		// O nome enriquece a conversa, mas não é requisito para a resposta.
+		// Uma indisponibilidade momentânea do perfil não deve bloquear a Si.
+		slog.Warn("load app user display name", "app_user_id", appUserID, "error", err)
+		userName = ""
+	}
 	historyStored, err := s.repository.ListMessages(
 		ctx,
 		appUserID,
@@ -342,6 +357,7 @@ func (s *Service) generateReply(
 		RequestID:      userMessage.ID,
 		ConversationID: userMessage.ConversationID,
 		UserID:         appUserID,
+		UserName:       strings.TrimSpace(userName),
 		Message:        userMessage.Content,
 		History:        history,
 		LocaleHint:     strings.TrimSpace(localeHint),
@@ -433,6 +449,77 @@ func (s *Service) generateReply(
 		UserMessage: userMessage, AssistantMessage: &assistantMessage,
 		AssistantStatus: status,
 	}, nil
+}
+
+func (s *Service) maybeSetAutomaticConversationTitle(
+	ctx context.Context,
+	appUserID string,
+	conversationID string,
+	firstMessage string,
+) {
+	stored, err := s.repository.GetConversation(ctx, appUserID, conversationID)
+	if err != nil {
+		slog.Warn("load conversation for automatic title", "conversation_id", conversationID, "error", err)
+		return
+	}
+	currentTitle, err := s.cipher.Decrypt(stored.TitleCiphertext)
+	if err != nil || string(currentTitle) != defaultConversationTitle {
+		return
+	}
+
+	title := automaticConversationTitle(firstMessage)
+	if title == "" || title == defaultConversationTitle {
+		return
+	}
+	titleCiphertext, err := s.cipher.Encrypt([]byte(title))
+	if err != nil {
+		slog.Warn("encrypt automatic conversation title", "conversation_id", conversationID, "error", err)
+		return
+	}
+	if _, err := s.repository.RenameConversationIfTitleMatches(
+		ctx,
+		appUserID,
+		conversationID,
+		stored.TitleCiphertext,
+		titleCiphertext,
+		s.now().UTC(),
+	); err != nil {
+		slog.Warn("save automatic conversation title", "conversation_id", conversationID, "error", err)
+	}
+}
+
+func automaticConversationTitle(content string) string {
+	normalized := strings.Join(strings.Fields(content), " ")
+	runes := []rune(normalized)
+	if len(runes) == 0 {
+		return ""
+	}
+
+	end := len(runes)
+	for index, character := range runes {
+		if index >= 12 && strings.ContainsRune(".!?…", character) {
+			end = index
+			break
+		}
+	}
+
+	truncated := false
+	if end > automaticTitleMaxRunes {
+		end = automaticTitleMaxRunes
+		for end > automaticTitleMaxRunes/2 && runes[end-1] != ' ' {
+			end--
+		}
+		truncated = true
+	}
+
+	title := strings.Trim(strings.TrimSpace(string(runes[:end])), "\"'“”‘’.,!?…:;—–- ")
+	if title == "" {
+		return ""
+	}
+	if truncated {
+		title += "…"
+	}
+	return title
 }
 
 func (s *Service) markGenerationFailed(

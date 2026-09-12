@@ -10,8 +10,11 @@ def test_companion_identity_is_si_and_versioned() -> None:
     assert VERSION == "companion-v3"
     assert settings.prompt_version == VERSION
     assert "You are Si" in SYSTEM_PROMPT
-    assert "Sinapsa is the platform" in SYSTEM_PROMPT
-    assert "an AI, not a person or therapist" in SYSTEM_PROMPT
+    assert "Siouve is the platform" in SYSTEM_PROMPT
+    assert "You are feminine" in SYSTEM_PROMPT
+    assert "an AI companion, not a person or\ntherapist" in SYSTEM_PROMPT
+    assert "user_name" in SYSTEM_PROMPT
+    assert "Do not invent a nickname" in SYSTEM_PROMPT
     assert "Never use emojis" in SYSTEM_PROMPT
     assert "one to four short sentences and under 100 words" in SYSTEM_PROMPT
     assert "Match the user's vocabulary" in SYSTEM_PROMPT

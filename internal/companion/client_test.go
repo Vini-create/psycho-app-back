@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -24,6 +25,15 @@ func TestHTTPClientRespond(t *testing.T) {
 		if r.Header.Get("X-Request-ID") != "request-1" {
 			t.Fatalf("request ID header was not sent")
 		}
+		var body struct {
+			UserName string `json:"user_name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body.UserName != "Vini de Paula" {
+			t.Fatalf("user_name = %q", body.UserName)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -35,7 +45,7 @@ func TestHTTPClientRespond(t *testing.T) {
 	})
 	response, err := client.Respond(context.Background(), Request{
 		RequestID: "request-1", ConversationID: "conversation-1",
-		UserID: "user-1", Message: "Olá",
+		UserID: "user-1", UserName: "Vini de Paula", Message: "Olá",
 	})
 	if err != nil {
 		t.Fatalf("Respond() error = %v", err)

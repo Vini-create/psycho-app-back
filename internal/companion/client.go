@@ -27,6 +27,7 @@ type Request struct {
 	RequestID      string    `json:"request_id"`
 	ConversationID string    `json:"conversation_id"`
 	UserID         string    `json:"user_id"`
+	UserName       string    `json:"user_name,omitempty"`
 	Message        string    `json:"message"`
 	History        []Message `json:"history"`
 	LocaleHint     string    `json:"locale_hint,omitempty"`
