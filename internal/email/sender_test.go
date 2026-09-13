@@ -16,8 +16,11 @@ func TestBrevoSenderSend(t *testing.T) {
 			t.Fatalf("unexpected Brevo request")
 		}
 		var payload struct {
-			Sender      struct{ Name, Email string }
-			To          []struct{ Email string }
+			Sender struct{ Name, Email string }
+			To     []struct {
+				Email                       string
+				ContactPixelTrackingConsent *bool `json:"contactPixelTrackingConsent"`
+			}
 			Subject     string
 			HTMLContent string `json:"htmlContent"`
 			TextContent string `json:"textContent"`
@@ -32,6 +35,9 @@ func TestBrevoSenderSend(t *testing.T) {
 			payload.HTMLContent != "<p>Hello</p>" || payload.TextContent != "" || len(payload.Tags) != 1 ||
 			payload.Headers["Idempotency-Key"] != "00000000-0000-4000-8000-000000000001" {
 			t.Fatalf("unexpected payload: %+v", payload)
+		}
+		if payload.To[0].ContactPixelTrackingConsent == nil || *payload.To[0].ContactPixelTrackingConsent {
+			t.Fatalf("tracking consent must be explicitly false: %+v", payload.To[0])
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"messageId":"brevo-123"}`))
@@ -52,7 +58,7 @@ func TestBrevoSenderSend(t *testing.T) {
 	}
 }
 
-func TestBrevoSenderUsesPlainTextWithoutHTMLTrackingLinks(t *testing.T) {
+func TestBrevoSenderSendsHTMLWithPlainTextFallback(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
@@ -62,8 +68,8 @@ func TestBrevoSenderUsesPlainTextWithoutHTMLTrackingLinks(t *testing.T) {
 		if payload["textContent"] != "https://app.example.com/redefinir-senha?token=abc" {
 			t.Fatalf("textContent = %#v", payload["textContent"])
 		}
-		if _, ok := payload["htmlContent"]; ok {
-			t.Fatal("htmlContent must be omitted for security links")
+		if payload["htmlContent"] != `<a href="https://app.example.com/redefinir-senha?token=abc">Redefinir</a>` {
+			t.Fatalf("htmlContent = %#v", payload["htmlContent"])
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"messageId":"brevo-123"}`))
@@ -75,7 +81,11 @@ func TestBrevoSenderUsesPlainTextWithoutHTMLTrackingLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	sender.endpoint = server.URL
-	_, err = sender.Send(context.Background(), Message{To: "person@example.com", TextContent: "https://app.example.com/redefinir-senha?token=abc"})
+	_, err = sender.Send(context.Background(), Message{
+		To:          "person@example.com",
+		TextContent: "https://app.example.com/redefinir-senha?token=abc",
+		HTMLContent: `<a href="https://app.example.com/redefinir-senha?token=abc">Redefinir</a>`,
+	})
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}

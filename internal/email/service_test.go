@@ -20,9 +20,13 @@ func TestBuildMessageUsesAudienceAndEscapesLink(t *testing.T) {
 	if message.To != "person+tag@example.com" || !strings.Contains(message.Subject, "senha") {
 		t.Fatalf("unexpected message: %+v", message)
 	}
-	if message.HTMLContent != "" || !strings.Contains(message.TextContent, "https://pro.example.com/redefinir-senha?") ||
+	if !strings.Contains(message.HTMLContent, "<h1") || !strings.Contains(message.HTMLContent, ">Siouve</p>") ||
+		!strings.Contains(message.TextContent, "https://pro.example.com/redefinir-senha?") ||
 		!strings.Contains(message.TextContent, url.QueryEscape("token&value")) {
 		t.Fatalf("message does not contain a safe reset link: %+v", message)
+	}
+	if strings.Contains(message.Subject, "Sinapsa") || strings.Contains(message.HTMLContent, "Sinapsa") {
+		t.Fatalf("message still contains the old product name: %+v", message)
 	}
 }
 

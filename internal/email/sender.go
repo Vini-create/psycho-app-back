@@ -76,14 +76,18 @@ func NewBrevoSender(apiKey, fromName, fromAddress string, timeout time.Duration)
 
 func (s *BrevoSender) Send(ctx context.Context, message Message) (string, error) {
 	payload := map[string]any{
-		"sender":  map[string]string{"name": s.fromName, "email": s.fromAddress},
-		"to":      []map[string]string{{"email": message.To}},
+		"sender": map[string]string{"name": s.fromName, "email": s.fromAddress},
+		"to": []map[string]any{{
+			"email":                       message.To,
+			"contactPixelTrackingConsent": false,
+		}},
 		"subject": message.Subject,
 		"tags":    message.Tags,
 	}
 	if message.TextContent != "" {
 		payload["textContent"] = message.TextContent
-	} else {
+	}
+	if message.HTMLContent != "" {
 		payload["htmlContent"] = message.HTMLContent
 	}
 	if message.IdempotencyKey != "" {

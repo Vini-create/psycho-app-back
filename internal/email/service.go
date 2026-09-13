@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"fmt"
+	"html"
 	"net/url"
 	"strings"
 	"time"
@@ -80,15 +81,15 @@ func (s *Service) buildMessage(audience, kind, recipient, token string) (Message
 		return Message{}, fmt.Errorf("unsupported email audience")
 	}
 	path := "/verificar-email"
-	subject := "Confirme seu e-mail na Sinapsa"
+	subject := "Confirme seu e-mail na Siouve"
 	title := "Confirme seu e-mail"
-	instruction := "Confirme seu e-mail para ativar sua conta na Sinapsa."
+	instruction := "Confirme seu e-mail para ativar sua conta na Siouve."
 	action := "Confirmar e-mail"
 	expiry := "Este link é válido por 24 horas. Se você não criou esta conta, ignore esta mensagem."
 	tag := "email-verification"
 	if kind == "password_reset" {
 		path = "/redefinir-senha"
-		subject = "Redefina sua senha da Sinapsa"
+		subject = "Redefina sua senha da Siouve"
 		title = "Redefina sua senha"
 		instruction = "Recebemos uma solicitação para criar uma nova senha para sua conta."
 		action = "Criar nova senha"
@@ -105,9 +106,18 @@ func (s *Service) buildMessage(audience, kind, recipient, token string) (Message
 	query.Set("token", token)
 	query.Set("email", recipient)
 	link.RawQuery = query.Encode()
-	// Password and verification links must bypass Brevo's HTML click-tracking
-	// redirect. The branded redirect endpoint is external to this service and a
-	// certificate fault there must never make an account recovery link unusable.
-	content := "Sinapsa\n\n" + title + "\n\n" + instruction + "\n\n" + action + ":\n" + link.String() + "\n\n" + expiry
-	return Message{To: recipient, Subject: subject, TextContent: content, Tags: []string{"sinapsa", tag, audience}}, nil
+	escapedLink := html.EscapeString(link.String())
+	textContent := "Siouve\n\n" + title + "\n\n" + instruction + "\n\n" + action + ":\n" + link.String() + "\n\n" + expiry
+	htmlContent := `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#f5f1e8;color:#25211d;font-family:Arial,sans-serif">` +
+		`<div style="max-width:560px;margin:0 auto;padding:40px 24px">` +
+		`<p style="font-size:13px;letter-spacing:.12em;text-transform:uppercase">Siouve</p>` +
+		`<h1 style="font-family:Georgia,serif;font-size:32px;line-height:1.15">` + html.EscapeString(title) + `</h1>` +
+		`<p style="font-size:17px;line-height:1.6">` + html.EscapeString(instruction) + `</p>` +
+		`<p style="margin:28px 0"><a href="` + escapedLink + `" style="display:inline-block;padding:14px 22px;background:#25211d;color:#fff;text-decoration:none;border-radius:4px;font-weight:700">` + html.EscapeString(action) + `</a></p>` +
+		`<p style="color:#625b52;font-size:13px;line-height:1.5">` + html.EscapeString(expiry) + `</p>` +
+		`</div></body></html>`
+	return Message{
+		To: recipient, Subject: subject, HTMLContent: htmlContent, TextContent: textContent,
+		Tags: []string{"sinapsa", tag, audience},
+	}, nil
 }
